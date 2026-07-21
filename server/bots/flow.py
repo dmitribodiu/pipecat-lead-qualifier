@@ -12,7 +12,6 @@ Migrated to ``pipecat.flows`` (bundled in pipecat-ai 1.5.0):
 """
 
 from typing import Dict, Optional, Tuple
-import sys
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -37,9 +36,8 @@ from prompts import (
 # Load environment variables from .env file
 load_dotenv()
 
-# Configure logger
-logger.remove(0)
-logger.add(sys.stderr, level="DEBUG")
+# Logging is configured by the entrypoint (main.py for the WebSocket/FreeSWITCH path,
+# runner.py for the Daily subprocess); this module does not reconfigure loguru sinks.
 
 
 # ==============================================================================

@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<!--
+  Replaces the vanilla "external" profile (same 5080 port slot) with the demo's
+  pipecat profile. A softphone on the Windows host calls sip:5000@127.0.0.1:5080
+  with NO registration (auth-calls=false); calls land in the "mrf" dialplan context.
+
+  ext-rtp-ip / ext-sip-ip = 127.0.0.1 + NAT latching: FreeSWITCH runs in Docker, so
+  it must advertise the host-reachable loopback (published ports) instead of the
+  container IP, and latch RTP back to wherever the caller's audio really comes from.
+  Same settings that were verified working on the drachtio image.
+-->
+<include>
+  <profile name="pipecat">
+    <domains>
+      <domain name="all" alias="true" parse="false"/>
+    </domains>
+    <settings>
+      <param name="sip-port" value="5080"/>
+      <param name="rtp-ip" value="$${local_ip_v4}"/>
+      <param name="sip-ip" value="$${local_ip_v4}"/>
+      <param name="ext-rtp-ip" value="127.0.0.1"/>
+      <param name="ext-sip-ip" value="127.0.0.1"/>
+      <param name="aggressive-nat-detection" value="true"/>
+      <param name="NDLB-force-rport" value="true"/>
+      <param name="apply-nat-acl" value="nat.auto"/>
+      <param name="auth-calls" value="false"/>
+      <param name="context" value="mrf"/>
+      <param name="dtmf-type" value="rfc2833"/>
+      <param name="rfc2833-pt" value="101"/>
+      <param name="codec-prefs" value="$${global_codec_prefs}"/>
+      <param name="inbound-codec-negotiation" value="greedy"/>
+      <param name="inbound-late-negotiation" value="true"/>
+      <param name="rtp-timer-name" value="soft"/>
+      <param name="manage-presence" value="false"/>
+      <param name="tls" value="false"/>
+    </settings>
+  </profile>
+</include>

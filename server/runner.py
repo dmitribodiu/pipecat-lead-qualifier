@@ -19,7 +19,7 @@ async def run_bot(bot_class: Type, config: BotConfig, room_url: str, token: str)
     bot = bot_class(config)
 
     # Set up transport and pipeline.
-    await bot.setup_transport(room_url, token)
+    await bot.setup_daily_transport(room_url, token)
     bot.create_pipeline()
 
     # Start the bot.

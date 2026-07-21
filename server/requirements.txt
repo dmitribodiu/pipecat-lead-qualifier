@@ -4,10 +4,12 @@
 # so there is no separate pipecat-ai-flows install.
 #
 # Install pipecat after these base deps. From the server/ directory:
-#   pip install -e "../external/pipecat[daily,google,deepgram,cartesia,elevenlabs,rime,silero,openai]"
+#   # Native Windows / FreeSWITCH (default WebSocket transport):
+#   pip install -e "../external/pipecat[websocket,google,openai,deepgram,cartesia,elevenlabs,rime,silero]"
+#   # Add the `daily` extra ONLY on Linux/WSL (daily-python has no Windows wheels):
+#   pip install -e "../external/pipecat[daily,websocket,google,openai,deepgram,cartesia,elevenlabs,rime,silero]"
 #
-# NOTE: the `daily` extra pulls daily-python, which has no Windows wheels; install
-# and run the Daily (Phase 1) path on Linux/WSL.
+# The `websocket` extra provides the FastAPI WebSocket transport used for FreeSWITCH.
 
 # Base deps used directly by the server code (fastapi/uvicorn/loguru/aiohttp are
 # also pulled transitively by pipecat; left unpinned to stay compatible with it).

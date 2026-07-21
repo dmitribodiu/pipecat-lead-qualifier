@@ -1,0 +1,40 @@
+<include>
+  <!--
+    Pipecat demo dialplan (context "mrf" — where the pipecat SIP profile lands calls).
+
+    5000 -> the AI bot. Uses amigniter's mod_audio_stream v1.0.3 (prebuilt .deb .so,
+    mounted into /usr/lib/freeswitch/mod; free for up to 10 concurrent channels).
+    Verified glitch-free on FreeSWITCH 1.10.12 (this safarov image) — the same .so
+    stutters on FS 1.10.10 (ABI mismatch), so keep module and FS versions paired.
+
+       STREAM_PLAYBACK=true            -> enables playback of audio the bot sends back
+       uuid_audio_stream <uuid> start ws://bothost:7860/audio mono 8000
+
+    The bot answers with streamAudio JSON (base64 L16 @ 8000 Hz); the module queues
+    and plays it into the call in real time.
+
+    7000 -> answer + park (no stream). Test extension for automated loopback checks:
+       originate {origination_uuid=X,STREAM_PLAYBACK=true}loopback/7000/mrf &park()
+
+    Reload after edits:  docker exec pcfs-freeswitch fs_cli -x reloadxml
+  -->
+  <context name="mrf">
+    <extension name="pipecat-bot">
+      <condition field="destination_number" expression="^5000$">
+        <action application="answer"/>
+        <!-- NOTE: no send_silence_when_idle here. On parked sofia channels it fed the
+             media bug ragged write-frames and chopped mod_audio_stream's playback
+             (loopback calls without it played pristine audio). -->
+        <action application="set" data="STREAM_PLAYBACK=true"/>
+        <action application="set" data="stream=${uuid_audio_stream(${uuid} start ws://bothost:7860/audio mono 8000)}"/>
+        <action application="park"/>
+      </condition>
+    </extension>
+    <extension name="parked-test-leg">
+      <condition field="destination_number" expression="^7000$">
+        <action application="answer"/>
+        <action application="park"/>
+      </condition>
+    </extension>
+  </context>
+</include>

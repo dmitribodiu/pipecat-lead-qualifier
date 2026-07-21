@@ -251,7 +251,10 @@ source venv/bin/activate
 # On Windows:
 # venv\Scripts\activate
 pip install -r requirements.txt
-pip install -e "../external/pipecat[daily,google,openai,deepgram,cartesia,elevenlabs,rime,silero]"
+# Native Windows / FreeSWITCH (default WebSocket transport):
+pip install -e "../external/pipecat[websocket,google,openai,deepgram,cartesia,elevenlabs,rime,silero]"
+# On Linux/WSL you can additionally include the Daily transport (adds daily-python):
+# pip install -e "../external/pipecat[daily,websocket,google,openai,deepgram,cartesia,elevenlabs,rime,silero]"
 ```
 
 ### Client Setup

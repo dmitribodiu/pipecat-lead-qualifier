@@ -20,12 +20,13 @@ class BotConfig:
     def __init__(self):
         load_dotenv()
 
-        # Validate required vars. Daily (Phase 1 transport) and Deepgram (STT) are
-        # always required; the LLM key required depends on the selected provider.
+        # Validate required vars. Deepgram (STT) is always required; the Daily key is
+        # only needed for the Daily transport; the LLM key depends on the provider.
         required = {
-            "DAILY_API_KEY": os.getenv("DAILY_API_KEY"),
             "DEEPGRAM_API_KEY": os.getenv("DEEPGRAM_API_KEY"),
         }
+        if os.getenv("TRANSPORT", "websocket").lower() == "daily":
+            required["DAILY_API_KEY"] = os.getenv("DAILY_API_KEY")
         if os.getenv("LLM_PROVIDER", "google").lower() == "openai":
             required["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
         else:
@@ -36,7 +37,7 @@ class BotConfig:
             raise ValueError(f"Missing required env vars: {', '.join(missing)}")
 
         self.daily: DailyConfig = {
-            "api_key": required["DAILY_API_KEY"],
+            "api_key": os.getenv("DAILY_API_KEY", ""),
             "api_url": os.getenv("DAILY_API_URL", "https://api.daily.co/v1"),
         }
 
@@ -100,6 +101,17 @@ class BotConfig:
     def bot_type(self, value: BotType):
         self._bot_type = value
         os.environ["BOT_TYPE"] = value
+
+    @property
+    def transport(self) -> str:
+        """Transport backend: 'websocket' (FreeSWITCH/mod_audio_stream) or 'daily'."""
+        value = os.getenv("TRANSPORT", "websocket").lower()
+        return value if value in ("websocket", "daily") else "websocket"
+
+    @property
+    def ws_sample_rate(self) -> int:
+        """PCM sample rate for the WebSocket/FreeSWITCH transport (telephony = 8000 Hz)."""
+        return int(os.getenv("WS_SAMPLE_RATE", "8000"))
 
     @property
     def bot_name(self) -> str:

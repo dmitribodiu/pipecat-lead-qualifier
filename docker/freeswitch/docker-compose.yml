@@ -1,0 +1,52 @@
+# Real-time FreeSWITCH <-> Pipecat demo.
+#
+# FreeSWITCH (stock safarov image = FS 1.10.12) + amigniter's mod_audio_stream v1.0.3
+# (prebuilt .deb .so, mounted in) streams the caller's audio to the Pipecat bot on the
+# HOST over a WebSocket and plays the bot's TTS back into the call (STREAM_PLAYBACK).
+#
+#   docker compose -f Docs/pipecat-freeswitch/docker-compose.yml up
+#
+# WHY THIS IMAGE: the .so is built against FreeSWITCH 1.10.12 (Debian 12 packages).
+# On FS 1.10.10 (drachtio image) it loads but playback is glitchy — ABI mismatch,
+# verified by a recorded loopback test (clean 3.00s sine on 1.10.12, stutter on
+# 1.10.10). Keep module and FS versions paired.
+#
+# ALIGNMENT: this is the same image the C# gateway uses (docker/freeswitch), so the
+# production architecture needs only ONE FreeSWITCH serving both wires: outbound ESL
+# to .NET (dialplan `socket`) and WS audio to Pipecat (uuid_audio_stream). In the
+# target design .NET owns ESL and issues uuid_audio_stream per call; here the demo
+# dialplan does it directly.
+#
+# ⚠️ Port clash: the stock cp-freeswitch (docker/freeswitch) binds 5080/8021/RTP too.
+#    Stop it first:  docker compose -f docker/freeswitch/docker-compose.yml down
+services:
+  freeswitch:
+    image: safarov/freeswitch:latest            # FreeSWITCH 1.10.12 — matches the .so ABI
+    container_name: pcfs-freeswitch
+    restart: unless-stopped
+    # NOTE: do NOT add cap_add: SYS_NICE or switch the profile to timerfd — that combo
+    # silenced mod_audio_stream playback on sofia channels here (loopback unaffected).
+    # The soft timer + no RT scheduling is the verified-working configuration.
+    extra_hosts:
+      # Docker Desktop overrides host.docker.internal with its own 192.168.65.254 (which
+      # doesn't route to the host here), so use a custom name for the host-gateway route
+      # that mod_audio_stream connects to (see the dialplan's uuid_audio_stream URL).
+      - "bothost:host-gateway"
+      - "host.docker.internal:host-gateway"
+    entrypoint: ["/bin/sh", "/docker-entrypoint.sh"]
+    ports:
+      - "127.0.0.1:5080:5080/udp"               # SIP (pipecat profile; replaces vanilla external)
+      - "127.0.0.1:5080:5080/tcp"
+      - "127.0.0.1:8021:8021/tcp"               # ESL (fs_cli / future .NET orchestrator)
+      - "127.0.0.1:16384-16394:16384-16394/udp" # RTP media (pinned in switch.conf.xml)
+    volumes:
+      - ./freeswitch/docker-entrypoint.sh:/docker-entrypoint.sh:ro
+      # The module itself (prebuilt v1.0.3 .deb contents; loaded via modules.conf.xml).
+      - ./freeswitch/mod/mod_audio_stream.so:/usr/lib/freeswitch/mod/mod_audio_stream.so:ro
+      # Config overrides (:ro so the vanilla first-boot seeding can't clobber them).
+      - ./freeswitch/conf/autoload_configs/modules.conf.xml:/etc/freeswitch/autoload_configs/modules.conf.xml:ro
+      - ./freeswitch/conf/autoload_configs/switch.conf.xml:/etc/freeswitch/autoload_configs/switch.conf.xml:ro
+      - ./freeswitch/conf/autoload_configs/acl.conf.xml:/etc/freeswitch/autoload_configs/acl.conf.xml:ro
+      - ./freeswitch/conf/autoload_configs/event_socket.conf.xml:/etc/freeswitch/autoload_configs/event_socket.conf.xml:ro
+      - ./freeswitch/conf/sip_profiles/external.xml:/etc/freeswitch/sip_profiles/external.xml:ro
+      - ./freeswitch/conf/dialplan/mrf.xml:/etc/freeswitch/dialplan/mrf.xml:ro

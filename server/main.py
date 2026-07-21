@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict
 
 import aiohttp
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from loguru import logger
@@ -25,6 +25,7 @@ from pipecat.transports.daily.utils import (
 )
 
 from config.server import ServerConfig
+from config.bot import BotConfig
 
 # Server configuration
 server_config = ServerConfig()
@@ -54,11 +55,14 @@ async def lifespan(app: FastAPI):
     It initializes the DailyRESTHelper and starts a background cleanup task.
     """
     aiohttp_session = aiohttp.ClientSession()
-    daily_helpers["rest"] = DailyRESTHelper(
-        daily_api_key=server_config.daily_api_key,
-        daily_api_url=server_config.daily_api_url,
-        aiohttp_session=aiohttp_session,
-    )
+    # The Daily REST helper + room-cleanup loop are only needed for the Daily transport.
+    # The default WebSocket/FreeSWITCH transport runs bots in-process (see /audio).
+    if server_config.daily_api_key:
+        daily_helpers["rest"] = DailyRESTHelper(
+            daily_api_key=server_config.daily_api_key,
+            daily_api_url=server_config.daily_api_url,
+            aiohttp_session=aiohttp_session,
+        )
 
     cleanup_task = asyncio.create_task(cleanup_finished_processes())
     try:
@@ -106,6 +110,38 @@ app.add_middleware(
 )
 
 
+@app.websocket("/audio")
+async def audio_websocket(websocket: WebSocket):
+    """FreeSWITCH mod_audio_stream entrypoint.
+
+    The dialplan starts `uuid_audio_stream ... ws://<host>:<port>/audio mono 8000`,
+    which opens this WebSocket. We build a bot for the call, run it in-process for the
+    duration of the connection, and clean up when FreeSWITCH disconnects.
+    """
+    await websocket.accept()
+    logger.info("FreeSWITCH mod_audio_stream connected on /audio")
+
+    config = BotConfig()
+    if config.bot_type == "flow":
+        from bots.flow import FlowBot
+
+        bot = FlowBot(config)
+    else:
+        from bots.simple import SimpleBot
+
+        bot = SimpleBot(config)
+
+    try:
+        await bot.setup_websocket_transport(websocket)
+        bot.create_pipeline()
+        await bot.start()
+    except Exception as e:
+        logger.exception(f"Bot terminated with error: {e}")
+    finally:
+        await bot.cleanup()
+        logger.info("Bot session ended")
+
+
 async def create_room_and_token() -> tuple[str, str]:
     """
     Create a Daily room and get an access token.
@@ -127,6 +163,9 @@ def parse_server_args():
     parser.add_argument("--host", help="Server host")
     parser.add_argument("--port", type=int, help="Server port")
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
+    parser.add_argument(
+        "-b", "--bot-type", type=str.lower, choices=["simple", "flow"], help="Bot variant"
+    )
 
     # Parse known server args and keep remaining for bots
     server_args, remaining_args = parser.parse_known_args()
@@ -139,6 +178,9 @@ def parse_server_args():
         server_config.port = server_args.port
     if server_args.reload:
         server_config.reload = server_args.reload
+    # Applied via env so both the in-process /audio bot and the Daily subprocess see it.
+    if server_args.bot_type:
+        os.environ["BOT_TYPE"] = server_args.bot_type
 
     global bot_args
     bot_args = remaining_args

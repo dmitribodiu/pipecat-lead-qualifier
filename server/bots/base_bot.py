@@ -1,17 +1,19 @@
 """Base bot framework for shared functionality (Pipecat 1.x).
 
-Migrated from the 0.0.x API to Pipecat 1.5.0:
+Supports two transports, selected by ``config.transport``:
 
-- ``OpenAILLMContext`` + ``create_context_aggregator`` -> ``LLMContext`` +
-  ``LLMContextAggregatorPair`` (universal aggregators).
-- Endpointing: the hand-rolled dual-LLM ``smart_endpointing`` pipeline is replaced
-  by Pipecat's built-in turn detection. Providing a ``vad_analyzer`` on the user
-  aggregator enables VAD; the default user-turn stop strategy is
-  ``TurnAnalyzerUserTurnStopStrategy(LocalSmartTurnAnalyzerV3())`` (smart turn).
-- Runtime: ``PipelineTask`` + ``PipelineRunner`` -> ``PipelineWorker`` +
-  ``WorkerRunner``.
-- Transport (Phase 1): ``DailyTransport`` from ``pipecat.transports.daily.transport``.
-- STT muting: ``STTMuteFilter`` -> ``user_mute_strategies`` on the user aggregator.
+- ``websocket`` (default): FreeSWITCH via ``mod_audio_stream`` over a FastAPI
+  WebSocket (``FastAPIWebsocketTransport`` + ``AudioStreamSerializer``), 8 kHz
+  telephony audio. Runs natively on Windows (no ``daily-python``). Endpointing is
+  VAD-only (``SpeechTimeoutUserTurnStopStrategy``) — the smart-turn v3 model expects
+  16 kHz and mis-detects turn ends on 8 kHz telephony audio.
+- ``daily``: Daily WebRTC (``DailyTransport``), 16 kHz, with the built-in smart-turn
+  analyzer (the 1.5.0 default). ``daily-python`` has no Windows wheels, so this path
+  is Linux/WSL only; the import is done lazily so it never blocks the WebSocket path.
+
+Common pipeline (both transports):
+    transport.input() -> STT -> user aggregator -> LLM -> TTS -> transport.output()
+                      -> assistant aggregator
 """
 
 from abc import ABC, abstractmethod
@@ -29,12 +31,19 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
-from pipecat.transports.daily.transport import DailyTransport, DailyParams
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
+from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
+    SpeechTimeoutUserTurnStopStrategy,
+)
 from pipecat.turns.user_mute.mute_until_first_bot_complete_user_mute_strategy import (
     MuteUntilFirstBotCompleteUserMuteStrategy,
 )
 from pipecat.turns.user_mute.function_call_user_mute_strategy import (
     FunctionCallUserMuteStrategy,
+)
+from pipecat.transports.websocket.fastapi import (
+    FastAPIWebsocketTransport,
+    FastAPIWebsocketParams,
 )
 
 from pipecat.services.deepgram.stt import DeepgramSTTService
@@ -44,6 +53,8 @@ from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 from pipecat.services.rime.tts import RimeHttpTTSService
 from pipecat.services.google.llm import GoogleLLMService
 from pipecat.services.openai.llm import OpenAILLMService
+
+from serializers.audio_stream import AudioStreamSerializer
 
 
 class BaseBot(ABC):
@@ -58,9 +69,14 @@ class BaseBot(ABC):
         """
         self.config = config
 
+        # Audio sample rate: 8 kHz for telephony (WebSocket/FreeSWITCH), 16 kHz for Daily.
+        self.sample_rate = config.ws_sample_rate if config.transport == "websocket" else 16000
+
         # Initialize STT service (Deepgram nova-3 is a standard model in 1.x).
         self.stt = DeepgramSTTService(
-            api_key=config.deepgram_api_key, model="nova-3-general"
+            api_key=config.deepgram_api_key,
+            model="nova-3-general",
+            sample_rate=self.sample_rate,
         )
 
         # Initialize TTS service
@@ -134,36 +150,70 @@ class BaseBot(ABC):
             else []
         )
 
+        # Endpointing depends on the audio rate. Telephony (8 kHz) uses VAD-only turn
+        # detection; the smart-turn v3 model expects 16 kHz and holds turns open on 8 kHz
+        # audio. Daily (16 kHz) keeps the built-in smart-turn analyzer (1.5.0 default).
+        if config.transport == "websocket":
+            vad_stop_secs = 0.5
+            user_turn_strategies = UserTurnStrategies(
+                stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.6)]
+            )
+        else:
+            vad_stop_secs = 0.2
+            user_turn_strategies = None  # None -> default (smart-turn v3)
+
         # Initialize context + universal aggregator pair.
-        # VAD on the user aggregator enables turn detection; the default user-turn
-        # stop strategy is built-in smart turn (LocalSmartTurnAnalyzerV3).
         self.context = LLMContext(messages=system_messages or [])
         self.context_aggregator = LLMContextAggregatorPair(
             self.context,
             user_params=LLMUserAggregatorParams(
-                vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
+                vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=vad_stop_secs)),
                 user_mute_strategies=user_mute_strategies,
+                user_turn_strategies=user_turn_strategies,
             ),
         )
 
         logger.debug(f"Initialised bot with config: {config}")
 
-        # Daily transport parameters (Phase 1). VAD is no longer a transport concern
-        # in 1.x; it lives on the user aggregator above.
-        self.transport_params = DailyParams(
+        # WebSocket/FreeSWITCH transport params (VAD lives on the aggregator in 1.x).
+        self.ws_params = FastAPIWebsocketParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
+            add_wav_header=False,
+            # 20ms output bursts match mod_audio_stream's 20ms media tick (smoother
+            # playback on FreeSWITCH sofia channels; verified in the reference stack).
+            audio_out_10ms_chunks=2,
+            serializer=AudioStreamSerializer(self.sample_rate),
         )
 
-        # These will be set up when needed.
-        self.transport: Optional[DailyTransport] = None
+        # Populated by a setup_*_transport call.
+        self.transport = None
         self.worker: Optional[PipelineWorker] = None
         self.runner: Optional[WorkerRunner] = None
 
-    async def setup_transport(self, url: str, token: str):
-        """Set up the Daily transport with the given room URL and token."""
+    async def setup_websocket_transport(self, websocket):
+        """Set up the FastAPI WebSocket transport for a FreeSWITCH mod_audio_stream call."""
+        self.transport = FastAPIWebsocketTransport(websocket=websocket, params=self.ws_params)
+
+        @self.transport.event_handler("on_client_connected")
+        async def on_client_connected(transport, client):
+            await self._handle_first_participant()
+
+        @self.transport.event_handler("on_client_disconnected")
+        async def on_client_disconnected(transport, client):
+            if self.worker:
+                await self.worker.cancel()
+
+    async def setup_daily_transport(self, url: str, token: str):
+        """Set up the Daily transport (Linux/WSL only — daily-python has no Windows wheel)."""
+        # Imported lazily so the WebSocket/native-Windows path never requires daily-python.
+        from pipecat.transports.daily.transport import DailyTransport, DailyParams
+
         self.transport = DailyTransport(
-            url, token, self.config.bot_name, params=self.transport_params
+            url,
+            token,
+            self.config.bot_name,
+            params=DailyParams(audio_in_enabled=True, audio_out_enabled=True),
         )
 
         @self.transport.event_handler("on_participant_left")
@@ -195,6 +245,8 @@ class BaseBot(ABC):
         self.worker = PipelineWorker(
             pipeline,
             params=PipelineParams(
+                audio_in_sample_rate=self.sample_rate,
+                audio_out_sample_rate=self.sample_rate,
                 enable_metrics=True,
                 enable_usage_metrics=True,
             ),
@@ -209,11 +261,16 @@ class BaseBot(ABC):
         await self.runner.run()
 
     async def cleanup(self):
-        """Clean up resources."""
+        """Clean up resources.
+
+        The worker owns the transport in 1.x; cancelling it stops the pipeline and
+        closes the underlying connection. (There is no transport.close() to call.)
+        """
         if self.worker:
-            await self.worker.cancel()
-        if self.transport:
-            await self.transport.close()
+            try:
+                await self.worker.cancel()
+            except Exception as e:
+                logger.debug(f"cleanup: worker.cancel() raised (already stopped?): {e}")
 
     @abstractmethod
     async def _handle_first_participant(self):
