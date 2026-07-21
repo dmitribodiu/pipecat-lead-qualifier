@@ -1,3 +1,6 @@
 [submodule "external/pipecat-client-web"]
 	path = external/pipecat-client-web
 	url = https://github.com/pipecat-ai/pipecat-client-web.git
+[submodule "external/pipecat"]
+	path = external/pipecat
+	url = https://github.com/pipecat-ai/pipecat.git

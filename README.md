@@ -232,18 +232,26 @@ Additional options:
 
 ### Server Setup
 
-Navigate to the `server` directory, set up a virtual environment, and install the dependencies:
+Navigate to the `server` directory, set up a virtual environment, and install the dependencies.
+
+Pipecat is **1.5.0** and is installed **editable** from the `external/pipecat` submodule
+(pinned to the `v1.5.0` tag). Flows is bundled in pipecat 1.5.0 (`pipecat.flows`), so there
+is no separate `pipecat-flows` install.
+
+> **Note:** the `daily` extra pulls `daily-python`, which has **no Windows wheels**. The
+> Daily transport therefore runs on **Linux/WSL** only. (The FreeSWITCH transport, added
+> later, removes this dependency and runs natively on Windows.)
+
 ```bash
 cd server
 python -m venv venv
 # Activate the virtual environment:
-# On Linux/macOS:
+# On Linux/macOS (incl. WSL):
 source venv/bin/activate
 # On Windows:
 # venv\Scripts\activate
 pip install -r requirements.txt
-pip install -e "../external/pipecat[daily,google,anthropic,openai,deepgram,cartesia,silero]"
-pip install -e "../external/pipecat-flows"
+pip install -e "../external/pipecat[daily,google,openai,deepgram,cartesia,elevenlabs,rime,silero]"
 ```
 
 ### Client Setup
