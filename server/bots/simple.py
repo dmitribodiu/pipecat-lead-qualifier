@@ -1,4 +1,6 @@
-"""Simple bot implementation using the base bot framework."""
+"""Simple bot implementation using the base bot framework (Pipecat 1.x)."""
+
+from pipecat.frames.frames import LLMRunFrame
 
 from bots.base_bot import BaseBot
 from config.bot import BotConfig
@@ -7,7 +9,7 @@ from loguru import logger
 
 
 class SimpleBot(BaseBot):
-    """Simple bot implementation with single LLM prompt chain."""
+    """Simple bot implementation with a single LLM prompt chain."""
 
     def __init__(self, config: BotConfig):
         # Define the initial system message with conversation instructions
@@ -16,6 +18,8 @@ class SimpleBot(BaseBot):
         super().__init__(config, system_messages)
 
     async def _handle_first_participant(self):
-        """Handle actions when the first participant joins."""
-        # Queue the context frame for processing
-        await self.task.queue_frames([self.context_aggregator.user().get_context_frame()])
+        """Handle actions when the first participant joins.
+
+        Trigger an initial LLM run so the bot greets the caller first.
+        """
+        await self.worker.queue_frames([LLMRunFrame()])

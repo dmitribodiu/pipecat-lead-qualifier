@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from loguru import logger
 
-from pipecat.transports.services.helpers.daily_rest import (
+from pipecat.transports.daily.utils import (
     DailyRESTHelper,
     DailyRoomParams,
 )

@@ -3,8 +3,8 @@
 import os
 from typing import TypedDict, Literal, NotRequired
 from dotenv import load_dotenv
-from pipecat.services.google import GoogleLLMService
-from pipecat.services.openai import BaseOpenAILLMService
+from pipecat.services.google.llm import GoogleLLMService
+from pipecat.services.openai.base_llm import BaseOpenAILLMService
 
 
 class DailyConfig(TypedDict):
@@ -20,12 +20,16 @@ class BotConfig:
     def __init__(self):
         load_dotenv()
 
-        # Validate required vars
+        # Validate required vars. Daily (Phase 1 transport) and Deepgram (STT) are
+        # always required; the LLM key required depends on the selected provider.
         required = {
             "DAILY_API_KEY": os.getenv("DAILY_API_KEY"),
             "DEEPGRAM_API_KEY": os.getenv("DEEPGRAM_API_KEY"),
-            "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
         }
+        if os.getenv("LLM_PROVIDER", "google").lower() == "openai":
+            required["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
+        else:
+            required["GOOGLE_API_KEY"] = os.getenv("GOOGLE_API_KEY")
 
         missing = [k for k, v in required.items() if not v]
         if missing:

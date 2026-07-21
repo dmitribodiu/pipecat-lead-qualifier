@@ -1,6 +1,14 @@
-aiohttp==3.11.11
-python-dotenv==1.0.1
-fastapi==0.115.8
-uvicorn==0.34.0
-loguru==0.7.3
-pytz==2025.1
+# Pipecat 1.5.0 bundles Flows (pipecat.flows) — the standalone pipecat-ai-flows
+# package is no longer used. The `daily` extra pulls daily-python, which has no
+# Windows wheels; install/run this (Phase 1, Daily transport) on Linux/WSL.
+# fastapi/uvicorn/aiohttp/loguru are transitive deps of pipecat-ai and are left
+# unpinned here so pip resolves versions compatible with pipecat 1.5.0.
+pipecat-ai[daily,google,deepgram,cartesia,elevenlabs,rime,silero,openai]==1.5.0
+
+# Used directly by the server code.
+python-dotenv
+pytz
+fastapi
+uvicorn
+loguru
+aiohttp
