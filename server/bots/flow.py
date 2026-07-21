@@ -266,7 +266,7 @@ class FlowBot(BaseBot):
             "execute_navigation", self._handle_navigation_action
         )
 
-        # Initialize the flow at the recording-consent node.
+        # Initialize the flow at the recording-consent node (which speaks first).
         await self.flow_manager.initialize(create_recording_consent_node())
 
     async def _handle_navigation_action(self, action: dict, flow_manager: FlowManager):

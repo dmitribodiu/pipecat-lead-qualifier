@@ -114,6 +114,12 @@ class BotConfig:
         return int(os.getenv("WS_SAMPLE_RATE", "8000"))
 
     @property
+    def enable_echo_mute(self) -> bool:
+        """Mute the caller while the bot speaks (AlwaysUserMuteStrategy). Prevents the bot
+        interrupting itself on phone echo, but DISABLES barge-in. Default off (barge-in on)."""
+        return self._is_truthy(os.getenv("ECHO_MUTE", "false"))
+
+    @property
     def bot_name(self) -> str:
         return os.getenv("BOT_NAME", "Marissa")
 

@@ -41,6 +41,7 @@ from pipecat.turns.user_mute.mute_until_first_bot_complete_user_mute_strategy im
 from pipecat.turns.user_mute.function_call_user_mute_strategy import (
     FunctionCallUserMuteStrategy,
 )
+from pipecat.turns.user_mute.always_user_mute_strategy import AlwaysUserMuteStrategy
 from pipecat.transports.websocket.fastapi import (
     FastAPIWebsocketTransport,
     FastAPIWebsocketParams,
@@ -143,20 +144,33 @@ class BaseBot(ABC):
             case _:
                 raise ValueError(f"Invalid LLM provider: {config.llm_provider}")
 
-        # Optional STT muting (1.x: strategies live on the user aggregator, not a filter).
-        user_mute_strategies = (
-            [MuteUntilFirstBotCompleteUserMuteStrategy(), FunctionCallUserMuteStrategy()]
-            if config.enable_stt_mute_filter
-            else []
-        )
+        # STT muting (1.x: strategies live on the user aggregator, not a filter).
+        user_mute_strategies = []
+        if config.transport == "websocket" and config.enable_echo_mute:
+            # Optional: mute the caller while the bot speaks so the bot's own TTS echoing
+            # back through the phone can't trip VAD and interrupt it. This DISABLES barge-in,
+            # so it's off by default (set ECHO_MUTE=true to enable). Prefer real echo
+            # cancellation if you need both no-self-interrupt and barge-in.
+            user_mute_strategies.append(AlwaysUserMuteStrategy())
+        if config.enable_stt_mute_filter:
+            user_mute_strategies += [
+                MuteUntilFirstBotCompleteUserMuteStrategy(),
+                FunctionCallUserMuteStrategy(),
+            ]
 
         # Endpointing depends on the audio rate. Telephony (8 kHz) uses VAD-only turn
         # detection; the smart-turn v3 model expects 16 kHz and holds turns open on 8 kHz
         # audio. Daily (16 kHz) keeps the built-in smart-turn analyzer (1.5.0 default).
         if config.transport == "websocket":
-            vad_stop_secs = 0.5
+            # Endpointing latency = vad_stop_secs (silence before VAD calls end-of-speech)
+            # + user_speech_timeout (grace for the caller to resume). Lower = snappier
+            # replies; too low = the bot cuts the caller off on natural pauses. ~0.5s total
+            # is responsive; raise if it interrupts mid-sentence.
+            # 0.2 is the value SpeechTimeoutUserTurnStopStrategy's built-in STT p99 latency
+            # tuning assumes; matching it keeps turn-end timing correct and is snappy.
+            vad_stop_secs = 0.2
             user_turn_strategies = UserTurnStrategies(
-                stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.6)]
+                stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.2)]
             )
         else:
             vad_stop_secs = 0.2
@@ -180,9 +194,12 @@ class BaseBot(ABC):
             audio_in_enabled=True,
             audio_out_enabled=True,
             add_wav_header=False,
-            # 20ms output bursts match mod_audio_stream's 20ms media tick (smoother
-            # playback on FreeSWITCH sofia channels; verified in the reference stack).
-            audio_out_10ms_chunks=2,
+            # Output audio buffering. Each streamAudio message carries this many 10ms
+            # chunks; larger = more cushion for mod_audio_stream against host<->container
+            # WebSocket jitter (fewer playback under-runs / less choppiness), at the cost
+            # of a little more latency. 4 = 40ms. Raise to 6-8 if still choppy; lower
+            # toward 2 to trim latency.
+            audio_out_10ms_chunks=4,
             serializer=AudioStreamSerializer(self.sample_rate),
         )
 
