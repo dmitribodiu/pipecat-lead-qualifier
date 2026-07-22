@@ -239,29 +239,33 @@ def create_success_node(order_id: str, amount: float, invoice_number: str) -> No
     """Payment order created; offer to pay another invoice (loop)."""
     success_line = (
         f"Your payment order for {amount:.2f} pounds against invoice "
-        f"{_spaced(invoice_number)} has been created. Your order reference is {order_id}."
+        f"{_spaced(invoice_number)} has been created. Your order reference is "
+        f"{_spaced(order_id)}. Would you like to pay another invoice?"
     )
     return {
         "name": "success",
         "role_message": _ROLE,
-        # Scripted success line via tts_say; the LLM only runs for the follow-up step
-        # (which needs conversation-history reasoning about pending payments).
+        # Fully scripted (result + follow-up question) via tts_say, and NO LLM run on
+        # node entry — running the LLM here made it re-narrate the function result
+        # ("your order was created") despite instructions, so the caller heard it twice.
         "pre_actions": [{"type": "tts_say", "text": success_line}],
+        "respond_immediately": False,
         "task_messages": [
             {
                 "role": "system",
                 "content": f"""<task>
-The success line has already been spoken: "{success_line}" — do NOT repeat it.
-Find out if the caller wants to pay another invoice.
+The caller has already been told: "{success_line}" — do NOT repeat any of it.
+Handle their reply.
 </task>
 
 <instructions>
-**Step 1.** Check the conversation history FIRST: if the caller has already mentioned another
-payment that has not been processed yet (e.g. they earlier said "two more invoices, 34 pounds
-for invoice 1001 and 33 pounds for invoice 4321" and only the first is done), do NOT ask —
-say "Next, invoice <number>." and call `collect_payment_details` with that payment's values.
+**Step 1.** Check the conversation history FIRST: if the caller earlier mentioned another
+payment that has not been processed yet (e.g. they said "two more invoices, 34 pounds for
+invoice 1001 and 33 pounds for invoice 4321" and only the first is done), then on ANY
+affirmative reply say "Next, invoice <number>." and call `collect_payment_details` with
+that payment's values — do not re-ask for details you already have.
 
-Otherwise ask: "Would you like to pay another invoice?"
+Otherwise:
 *   [ CONDITION: yes, WITH details (e.g. "yes, 34 pounds for invoice 1001") ]
     *   Call `collect_payment_details` immediately with the values they gave. If they list
         SEVERAL payments, say "Let's take them one at a time." and submit only the FIRST —
@@ -502,7 +506,7 @@ async def pay_another(flow_manager: FlowManager) -> Tuple[None, NodeConfig]:
     """The caller wants to pay another invoice."""
     flow_manager.state["awaiting"] = "invoice"
     return None, create_collect_node(
-        'Say: "Sure. May I have the next invoice number please?"'
+        "Sure. May I have the next invoice number please?"
     )
 
 
@@ -522,7 +526,6 @@ async def finish_call(flow_manager: FlowManager) -> Tuple[None, NodeConfig]:
 # than "one moment" followed instantly by the answer.
 _INVOICE_LOOKUP_FILLERS = [
     "One moment, let me find that invoice in our system.",
-    "Just a second while I look that up.",
     "Let me check that for you.",
 ]
 _CREATE_ORDER_FILLERS = [
@@ -562,6 +565,15 @@ class PaymentBot(BaseBot):
                 if call.function_name == "collect_payment_details" and args.get(
                     "invoice_number"
                 ):
+                    # Only when a REAL lookup will happen: the LLM re-passes the known
+                    # invoice number with every call, and "let me look that up" right
+                    # before an instant reply sounds wrong.
+                    known = (
+                        self.flow_manager.state.get("invoice") if self.flow_manager else None
+                    )
+                    digits = _normalize_invoice(args["invoice_number"])
+                    if known is not None and digits == known.number:
+                        return
                     await self.tts.queue_frame(
                         TTSSpeakFrame(random.choice(_INVOICE_LOOKUP_FILLERS))
                     )
@@ -595,11 +607,11 @@ class PaymentBot(BaseBot):
                 node = create_collect_node()
         elif awaiting == "amount":
             node = create_collect_node(
-                'Say: "I\'m sorry, I didn\'t catch that. How much would you like to pay?"'
+                "I'm sorry, I didn't catch that. How much would you like to pay?"
             )
         else:
             node = create_collect_node(
-                'Say: "I\'m sorry, I didn\'t catch that. May I have your invoice number please?"'
+                "I'm sorry, I didn't catch that. May I have your invoice number please?"
             )
         await self.flow_manager.set_node_from_config(node)
 

@@ -70,10 +70,11 @@ class MockInvoiceApi(InvoiceApi):
 class MockPaymentApi(PaymentApi):
     """In-memory payment-order creator for development and phone testing."""
 
-    _ids = itertools.count(1)
+    # Four-digit spoken-friendly references (TTS reads "1001", not "P O dash zero...").
+    _ids = itertools.count(1001)
 
     async def create_payment_order(self, invoice_number: str, amount: float) -> PaymentOrderResult:
         await asyncio.sleep(0.3)  # simulate REST latency
-        order_id = f"PO-{next(self._ids):05d}"
+        order_id = f"{next(self._ids):04d}"
         logger.info(f"MockPaymentApi: created {order_id} ({amount:.2f} for invoice {invoice_number})")
         return PaymentOrderResult(ok=True, order_id=order_id)
