@@ -1,0 +1,157 @@
+{
+  "$id": "https://flows.pipecat.ai/schema/flow.json",
+  "meta": {
+    "name": "Invoice Payment Flow",
+    "version": "1.0.0",
+    "description": "Visualization export of server/bots/payment.py (the Python dynamic flow is the source of truth). Import at https://flows.pipecat.ai/editor. Not expressible statically: the invoice API lookup, amount limits, 3-strikes retry budgets, and idle/no-input handling live in code; invalid values re-ask WITHIN their node (the editor's validator rejects self-loop edges, so those loops aren't drawn)."
+  },
+  "nodes": [
+    {
+      "id": "collect",
+      "type": "initial",
+      "position": { "x": 80, "y": 240 },
+      "data": {
+        "label": "Collect invoice + amount",
+        "role_messages": [
+          {
+            "role": "system",
+            "content": "You are Marissa, an automated payments assistant. Brief, warm, conversational. Never invent values; re-ask only what a function error names as invalid."
+          }
+        ],
+        "task_messages": [
+          {
+            "role": "system",
+            "content": "One multi-slot node. Ask for the invoice number, then (after lookup) state 'Invoice N, outstanding balance X pounds' and ask the amount. Honor volunteered info: 'pay 34 pounds for invoice 222' -> one call, nothing re-asked. Several payments -> take the first, one at a time. In code: InvoiceApi lookup; amount within PAYMENT_MIN/MAX; 3-strikes per failure class -> terminate; invalid values re-ask in this node."
+          }
+        ],
+        "functions": [
+          {
+            "name": "collect_payment_details",
+            "description": "Record invoice_number and/or amount. Code validates; errors stay in-node and the LLM re-asks only the invalid value. Valid pair -> confirm.",
+            "properties": {
+              "invoice_number": { "type": "string", "description": "3-10 digit invoice reference" },
+              "amount": { "type": "number", "description": "Amount in pounds" }
+            },
+            "required": [],
+            "next_node_id": "confirm"
+          }
+        ]
+      }
+    },
+    {
+      "id": "confirm",
+      "type": "node",
+      "position": { "x": 430, "y": 240 },
+      "data": {
+        "label": "Confirm payment",
+        "task_messages": [
+          {
+            "role": "system",
+            "content": "Say: 'So you wish to pay {amount} pounds for invoice {number}. Is that correct?' Yes -> confirm_payment(confirmed=true) creates the order. No without details -> ask what to change. Corrections re-validate via collect_payment_details (stays here with a fresh read-back). Cancel -> goodbye. Payment API failure -> api_failure."
+          }
+        ],
+        "functions": [
+          {
+            "name": "confirm_payment",
+            "description": "confirmed=true -> create payment order via PaymentApi -> success. cancel=true -> goodbye. API error -> api_failure.",
+            "properties": {
+              "confirmed": { "type": "boolean" },
+              "cancel": { "type": "boolean" }
+            },
+            "required": ["confirmed"],
+            "next_node_id": "success"
+          }
+        ]
+      }
+    },
+    {
+      "id": "success",
+      "type": "node",
+      "position": { "x": 780, "y": 240 },
+      "data": {
+        "label": "Order created — another?",
+        "task_messages": [
+          {
+            "role": "system",
+            "content": "Say: 'Your payment order for {amount} pounds against invoice {number} has been created. Reference {order_id}.' If the caller already mentioned another pending payment, proceed with it ('Next, invoice N.') via collect_payment_details -> confirm. Otherwise ask 'Would you like to pay another invoice?'"
+          }
+        ],
+        "functions": [
+          {
+            "name": "submit_next_payment",
+            "description": "Volunteered next payment goes straight into the validated path (runtime: collect_payment_details registered on this node).",
+            "properties": {
+              "invoice_number": { "type": "string" },
+              "amount": { "type": "number" }
+            },
+            "required": [],
+            "next_node_id": "confirm"
+          },
+          {
+            "name": "pay_another",
+            "description": "Yes without details -> fresh collect node.",
+            "next_node_id": "collect"
+          },
+          {
+            "name": "finish_call",
+            "description": "Caller is done.",
+            "next_node_id": "goodbye"
+          }
+        ]
+      }
+    },
+    {
+      "id": "goodbye",
+      "type": "end",
+      "position": { "x": 1120, "y": 120 },
+      "data": {
+        "label": "Goodbye",
+        "task_messages": [
+          { "role": "system", "content": "Say: 'Thank you for using our payments line. Goodbye.'" }
+        ],
+        "post_actions": [{ "type": "end_conversation" }]
+      }
+    },
+    {
+      "id": "terminate",
+      "type": "end",
+      "position": { "x": 430, "y": 500 },
+      "data": {
+        "label": "Terminate (3 strikes / silence)",
+        "task_messages": [
+          {
+            "role": "system",
+            "content": "Say exactly: 'I will terminate the call, bye.' Reached when unknown-invoice, invalid-amount, or idle attempts hit PAYMENT_MAX_ATTEMPTS (3)."
+          }
+        ],
+        "post_actions": [{ "type": "end_conversation" }]
+      }
+    },
+    {
+      "id": "api_failure",
+      "type": "end",
+      "position": { "x": 780, "y": 500 },
+      "data": {
+        "label": "Payment API failed",
+        "task_messages": [
+          {
+            "role": "system",
+            "content": "Say: 'I'm sorry, there was a problem creating your payment order. No payment has been taken. Please try again later. Goodbye.'"
+          }
+        ],
+        "post_actions": [{ "type": "end_conversation" }]
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "collect", "target": "confirm", "label": "invoice found + amount valid" },
+    { "id": "e3", "source": "collect", "target": "terminate", "label": "3 strikes or silence x3" },
+    { "id": "e4", "source": "confirm", "target": "success", "label": "confirmed -> order created" },
+    { "id": "e6", "source": "confirm", "target": "goodbye", "label": "cancel" },
+    { "id": "e7", "source": "confirm", "target": "api_failure", "label": "payment API error" },
+    { "id": "e8", "source": "success", "target": "confirm", "label": "next payment volunteered" },
+    { "id": "e9", "source": "success", "target": "collect", "label": "pay_another" },
+    { "id": "e10", "source": "success", "target": "goodbye", "label": "finish_call" },
+    { "id": "e11", "source": "confirm", "target": "terminate", "label": "amount strikes exhausted" }
+  ]
+}

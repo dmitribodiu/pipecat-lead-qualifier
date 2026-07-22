@@ -122,7 +122,11 @@ async def audio_websocket(websocket: WebSocket):
     logger.info("FreeSWITCH mod_audio_stream connected on /audio")
 
     config = BotConfig()
-    if config.bot_type == "flow":
+    if config.bot_type == "payment":
+        from bots.payment import PaymentBot
+
+        bot = PaymentBot(config)
+    elif config.bot_type == "flow":
         from bots.flow import FlowBot
 
         bot = FlowBot(config)
@@ -164,7 +168,11 @@ def parse_server_args():
     parser.add_argument("--port", type=int, help="Server port")
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
     parser.add_argument(
-        "-b", "--bot-type", type=str.lower, choices=["simple", "flow"], help="Bot variant"
+        "-b",
+        "--bot-type",
+        type=str.lower,
+        choices=["simple", "flow", "payment"],
+        help="Bot variant",
     )
 
     # Parse known server args and keep remaining for bots

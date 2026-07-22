@@ -176,7 +176,9 @@ class BaseBot(ABC):
             vad_stop_secs = 0.2
             user_turn_strategies = None  # None -> default (smart-turn v3)
 
-        # Initialize context + universal aggregator pair.
+        # Initialize context + universal aggregator pair. Subclasses may define
+        # IDLE_TIMEOUT_S (seconds of caller silence after the bot stops speaking that
+        # fires on_user_turn_idle); 0 disables idle detection.
         self.context = LLMContext(messages=system_messages or [])
         self.context_aggregator = LLMContextAggregatorPair(
             self.context,
@@ -184,6 +186,7 @@ class BaseBot(ABC):
                 vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=vad_stop_secs)),
                 user_mute_strategies=user_mute_strategies,
                 user_turn_strategies=user_turn_strategies,
+                user_idle_timeout=float(getattr(self, "IDLE_TIMEOUT_S", 0.0)),
             ),
         )
 

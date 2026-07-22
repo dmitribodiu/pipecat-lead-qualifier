@@ -8,6 +8,9 @@ Each module provides a typed interface and follows consistent patterns for:
 - Logging
 """
 
-from .calcom_api import CalComAPI
+# NOTE: no eager submodule imports here. CalComAPI validates CALCOM_API_KEY at import
+# time, which would break bots that don't use it — import service clients directly from
+# their modules (e.g. `from services.calcom_api import CalComAPI`,
+# `from services.invoice_api import MockInvoiceApi`).
 
-__all__ = ["CalComAPI"]
+__all__ = []

@@ -39,7 +39,7 @@ def cli() -> None:
         "-b",
         "--bot-type",
         type=str.lower,
-        choices=["simple", "flow"],
+        choices=["simple", "flow", "payment"],
         help="Type of bot (overrides BOT_TYPE in configuration)",
     )
 
@@ -158,7 +158,11 @@ def cli() -> None:
     config = BotConfig()
 
     # Determine the bot class to use based on the configuration
-    if config.bot_type == "flow":
+    if config.bot_type == "payment":
+        from bots.payment import PaymentBot
+
+        bot_class = PaymentBot
+    elif config.bot_type == "flow":
         from bots.flow import FlowBot
 
         bot_class = FlowBot
