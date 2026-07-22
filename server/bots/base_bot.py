@@ -23,6 +23,7 @@ from loguru import logger
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
+from pipecat.observers.user_bot_latency_observer import UserBotLatencyObserver
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineWorker, PipelineParams
 from pipecat.workers.runner import WorkerRunner
@@ -262,6 +263,18 @@ class BaseBot(ABC):
             ]
         )
 
+        # Voice-to-voice latency: time from the caller finishing speaking to the bot
+        # starting to speak, logged per turn with a per-service (STT/LLM/TTS) breakdown.
+        latency_observer = UserBotLatencyObserver()
+
+        @latency_observer.event_handler("on_latency_measured")
+        async def _on_latency(_observer, latency: float):
+            logger.info(f"Voice-to-voice latency: {latency:.2f}s (user stopped -> bot speaking)")
+
+        @latency_observer.event_handler("on_latency_breakdown")
+        async def _on_latency_breakdown(_observer, breakdown):
+            logger.info(f"Latency breakdown: {breakdown}")
+
         self.worker = PipelineWorker(
             pipeline,
             params=PipelineParams(
@@ -270,6 +283,7 @@ class BaseBot(ABC):
                 enable_metrics=True,
                 enable_usage_metrics=True,
             ),
+            observers=[latency_observer],
         )
         self.runner = WorkerRunner(handle_sigint=False)
 

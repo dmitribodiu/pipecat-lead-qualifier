@@ -20,12 +20,14 @@ Design split (the rule the prototypes converged on):
 """
 
 import os
+import random
 from typing import Optional, Tuple
 
 from dotenv import load_dotenv
 from loguru import logger
 
 from pipecat.flows import FlowManager, NodeConfig
+from pipecat.frames.frames import TTSSpeakFrame
 
 from bots.base_bot import BaseBot
 from config.bot import BotConfig
@@ -123,13 +125,17 @@ def _parse_amount(value) -> Optional[float]:
 
 
 def _strike(
-    flow_manager: FlowManager, counter: str, error_result: dict
+    flow_manager: FlowManager, counter: str, error_result: dict, say: str
 ) -> Tuple[dict, Optional[NodeConfig]]:
-    """Charge one attempt against ``counter``; stay in node or terminate at the cap."""
+    """Charge one attempt against ``counter``; re-ask with a scripted line, or terminate.
+
+    The re-ask is spoken via a tts_say node re-entry (``say``) instead of letting the
+    LLM phrase the error — saves a whole LLM round trip on every retry.
+    """
     attempts = flow_manager.state.get(counter, 0) + 1
     flow_manager.state[counter] = attempts
     if attempts < MAX_ATTEMPTS:
-        return error_result, None  # stay in the current node; LLM re-asks
+        return error_result, create_collect_node(prefix=say)
     return error_result, create_terminate_node()
 
 
@@ -140,16 +146,19 @@ def _strike(
 
 def create_collect_node(prefix: str = "") -> NodeConfig:
     """The multi-slot collection node: invoice number + amount, in one node."""
-    opening = prefix or (
-        'Say: "Welcome to the payments line. May I have your invoice number please?"'
-    )
+    # The opening line is spoken via tts_say (no LLM round trip — instant), and
+    # respond_immediately=False means the LLM only runs once the caller replies.
+    opening = prefix or "Welcome to the payments line. May I have your invoice number please?"
     return {
         "name": "collect",
         "role_message": _ROLE,
+        "pre_actions": [{"type": "tts_say", "text": opening}],
+        "respond_immediately": False,
         "task_messages": [
             {
                 "role": "system",
                 "content": f"""<task>
+The caller has already been asked: "{opening}" — do NOT repeat it unprompted.
 Collect TWO values from the caller, then hand off to the payment confirmation:
 1. invoice_number — a {INVOICE_MIN_LEN} to {INVOICE_MAX_LEN} digit invoice reference.
 2. amount — how much they want to pay, in pounds.
@@ -160,8 +169,6 @@ invoice and will tell you what to say and what is still missing.
 </task>
 
 <instructions>
-**Step 0 — Opening.** {opening}
-
 **Step 1 — Invoice number.**
 *   [ CONDITION: caller gives an invoice number (and possibly an amount too) ]
     *   Immediately call `collect_payment_details` with everything they gave.
@@ -190,20 +197,26 @@ and re-ask ONLY the invalid value. Keep any value that was accepted.
 
 def create_confirm_node(invoice: Invoice, amount: float) -> NodeConfig:
     """Read-back confirmation node."""
+    readback = (
+        f"So you wish to pay {amount:.2f} pounds for invoice {_spaced(invoice.number)}. "
+        "Is that correct?"
+    )
     return {
         "name": "confirm",
         "role_message": _ROLE,
+        # Scripted read-back spoken via tts_say — skips the second LLM round trip.
+        "pre_actions": [{"type": "tts_say", "text": readback}],
+        "respond_immediately": False,
         "task_messages": [
             {
                 "role": "system",
                 "content": f"""<task>
-Confirm the payment with the caller, then call `confirm_payment`.
+The caller has already been asked: "{readback}" — do NOT repeat it unprompted.
+Handle their reply, then call `confirm_payment`.
 </task>
 
 <instructions>
-**Step 1 — Read back.** Say: "So you wish to pay {amount:.2f} pounds for invoice {_spaced(invoice.number)}. Is that correct?"
-
-**Step 2 — Handle the reply.**
+**Handle the reply.**
 *   [ CONDITION: caller clearly confirms (yes / that's right / correct) ]
     *   Call `confirm_payment(confirmed=true)`.
 *   [ CONDITION: caller says no, or wants something changed, but hasn't said what ]
@@ -224,19 +237,26 @@ Confirm the payment with the caller, then call `confirm_payment`.
 
 def create_success_node(order_id: str, amount: float, invoice_number: str) -> NodeConfig:
     """Payment order created; offer to pay another invoice (loop)."""
+    success_line = (
+        f"Your payment order for {amount:.2f} pounds against invoice "
+        f"{_spaced(invoice_number)} has been created. Your order reference is {order_id}."
+    )
     return {
         "name": "success",
         "role_message": _ROLE,
+        # Scripted success line via tts_say; the LLM only runs for the follow-up step
+        # (which needs conversation-history reasoning about pending payments).
+        "pre_actions": [{"type": "tts_say", "text": success_line}],
         "task_messages": [
             {
                 "role": "system",
                 "content": f"""<task>
-Report success, then find out if the caller wants to pay another invoice.
+The success line has already been spoken: "{success_line}" — do NOT repeat it.
+Find out if the caller wants to pay another invoice.
 </task>
 
 <instructions>
-**Step 1.** Say: "Your payment order for {amount:.2f} pounds against invoice {_spaced(invoice_number)} has been created. Your order reference is {order_id}."
-**Step 2.** Check the conversation history FIRST: if the caller has already mentioned another
+**Step 1.** Check the conversation history FIRST: if the caller has already mentioned another
 payment that has not been processed yet (e.g. they earlier said "two more invoices, 34 pounds
 for invoice 1001 and 33 pounds for invoice 4321" and only the first is done), do NOT ask —
 say "Next, invoice <number>." and call `collect_payment_details` with that payment's values.
@@ -334,8 +354,9 @@ async def collect_payment_details(
                     "status": "error",
                     "error": f"'{invoice_number}' is not a valid invoice number — it must be "
                     f"{INVOICE_MIN_LEN} to {INVOICE_MAX_LEN} digits.",
-                    "hint": "Ask the caller for their invoice number again.",
                 },
+                say=f"I'm sorry, an invoice number is {INVOICE_MIN_LEN} to "
+                f"{INVOICE_MAX_LEN} digits. May I have your invoice number again?",
             )
         if invoice is None or digits != invoice.number:
             found = await invoice_api.get_invoice(digits)
@@ -344,11 +365,9 @@ async def collect_payment_details(
                 return _strike(
                     flow_manager,
                     "attempts_invoice",
-                    {
-                        "status": "error",
-                        "error": f"invoice {digits} does not exist.",
-                        "hint": "Tell the caller that invoice doesn't exist and ask for the number again.",
-                    },
+                    {"status": "error", "error": f"invoice {digits} does not exist."},
+                    say=f"I'm sorry, invoice {_spaced(digits)} does not exist. "
+                    "May I have your invoice number again?",
                 )
             invoice = found
             state["invoice"] = invoice
@@ -377,9 +396,9 @@ async def collect_payment_details(
                     "status": "error",
                     "error": f"the amount must be between {MIN_AMOUNT:.0f} and "
                     f"{MAX_AMOUNT:.0f} pounds (got {amount!r}).",
-                    "hint": "Tell the caller the allowed range and ask for another amount. "
-                    "Keep the invoice number.",
                 },
+                say=f"I'm sorry, the amount must be between {MIN_AMOUNT:.0f} and "
+                f"{MAX_AMOUNT:.0f} pounds. How much would you like to pay?",
             )
         state["amount"] = value
         state["awaiting"] = "confirm"
@@ -388,7 +407,8 @@ async def collect_payment_details(
             create_confirm_node(invoice, value),
         )
 
-    # Invoice known, amount still missing -> stay in node, tell the LLM what to say.
+    # Invoice known, amount still missing -> scripted reply via node re-entry
+    # (tts_say, no LLM round trip to phrase it).
     state["awaiting"] = "amount"
     return (
         {
@@ -396,10 +416,11 @@ async def collect_payment_details(
             "invoice_number": invoice.number,
             "amount_due": invoice.amount_due,
             "currency": invoice.currency,
-            "hint": "State the invoice number and outstanding balance, then ask how much "
-            "they would like to pay.",
         },
-        None,
+        create_collect_node(
+            prefix=f"Invoice {_spaced(invoice.number)}, outstanding balance "
+            f"{invoice.amount_due:.2f} pounds. How much would you like to pay?"
+        ),
     )
 
 
@@ -495,6 +516,21 @@ async def finish_call(flow_manager: FlowManager) -> Tuple[None, NodeConfig]:
 # ==============================================================================
 
 
+# Fillers spoken the moment the LLM starts a slow function call — masks the
+# lookup + response-generation latency. Only for functions that hit the network;
+# instant functions (FAQ, pay_another, finish_call) get none, silence is better
+# than "one moment" followed instantly by the answer.
+_INVOICE_LOOKUP_FILLERS = [
+    "One moment, let me find that invoice in our system.",
+    "Just a second while I look that up.",
+    "Let me check that for you.",
+]
+_CREATE_ORDER_FILLERS = [
+    "One moment while I create your payment order.",
+    "Just a second, setting that up now.",
+]
+
+
 class PaymentBot(BaseBot):
     """Payment-order bot on the shared BaseBot framework."""
 
@@ -517,6 +553,28 @@ class PaymentBot(BaseBot):
         async def _on_turn_started(_aggregator, _strategy):
             if self.flow_manager:
                 self.flow_manager.state.pop("attempts_idle", None)
+
+        # Fillers: speak an acknowledgement the moment a slow function call starts.
+        @self.llm.event_handler("on_function_calls_started")
+        async def _on_function_calls_started(_service, function_calls):
+            for call in function_calls:
+                args = call.arguments or {}
+                if call.function_name == "collect_payment_details" and args.get(
+                    "invoice_number"
+                ):
+                    await self.tts.queue_frame(
+                        TTSSpeakFrame(random.choice(_INVOICE_LOOKUP_FILLERS))
+                    )
+                    return
+                if (
+                    call.function_name == "confirm_payment"
+                    and args.get("confirmed")
+                    and not args.get("cancel")
+                ):
+                    await self.tts.queue_frame(
+                        TTSSpeakFrame(random.choice(_CREATE_ORDER_FILLERS))
+                    )
+                    return
 
     async def _handle_idle(self):
         if not self.flow_manager:
