@@ -152,7 +152,10 @@ def create_collect_node(prefix: str = "") -> NodeConfig:
     return {
         "name": "collect",
         "role_message": _ROLE,
-        "pre_actions": [{"type": "tts_say", "text": opening}],
+        "pre_actions": [
+            {"type": "tts_say", "text": opening},
+            {"type": "set_completeness_rules", "rules": COLLECT_COMPLETENESS_RULES},
+        ],
         "respond_immediately": False,
         "task_messages": [
             {
@@ -205,7 +208,10 @@ def create_confirm_node(invoice: Invoice, amount: float) -> NodeConfig:
         "name": "confirm",
         "role_message": _ROLE,
         # Scripted read-back spoken via tts_say — skips the second LLM round trip.
-        "pre_actions": [{"type": "tts_say", "text": readback}],
+        "pre_actions": [
+            {"type": "tts_say", "text": readback},
+            {"type": "set_completeness_rules", "rules": CONFIRM_COMPLETENESS_RULES},
+        ],
         "respond_immediately": False,
         "task_messages": [
             {
@@ -248,7 +254,10 @@ def create_success_node(order_id: str, amount: float, invoice_number: str) -> No
         # Fully scripted (result + follow-up question) via tts_say, and NO LLM run on
         # node entry — running the LLM here made it re-narrate the function result
         # ("your order was created") despite instructions, so the caller heard it twice.
-        "pre_actions": [{"type": "tts_say", "text": success_line}],
+        "pre_actions": [
+            {"type": "tts_say", "text": success_line},
+            {"type": "set_completeness_rules", "rules": SUCCESS_COMPLETENESS_RULES},
+        ],
         "respond_immediately": False,
         "task_messages": [
             {
@@ -520,6 +529,37 @@ async def finish_call(flow_manager: FlowManager) -> Tuple[None, NodeConfig]:
 # ==============================================================================
 
 
+# ── Per-node turn-completeness rules ─────────────────────────────────────────
+# Swapped into the completeness judge on node entry (set_completeness_rules
+# pre-action), so each node's judge only carries rules relevant to its question.
+COLLECT_COMPLETENESS_RULES = f"""
+
+CURRENT QUESTION: invoice number and payment amount.
+- Invoice numbers are {INVOICE_MIN_LEN} to {INVOICE_MAX_LEN} digits. If the caller is
+  dictating digits and has said FEWER than {INVOICE_MIN_LEN} so far (e.g. "two two"),
+  they are still dictating -> `○`. Callers often dictate digits in groups with pauses.
+- "My invoice number is" / "the number is" with no digits yet -> `○`.
+- "I want to pay" / "I'd like to pay" with no amount and no invoice yet -> `○`.
+- "for invoice" / "against invoice" trailing at the end -> `○` (the number is coming).
+- A digit string of {INVOICE_MIN_LEN}+ digits, or an amount ("thirty pounds",
+  "34.50"), IS a complete answer -> `✓`."""
+
+CONFIRM_COMPLETENESS_RULES = """
+
+CURRENT QUESTION: yes/no confirmation of the payment read-back.
+- A clear yes ("yes", "correct", "that's right") or no -> `✓`.
+- "yes but" / "no, actually" / "can you change" trailing without the change -> `○`.
+- "change the amount to" / "make it" without a value yet -> `○`.
+- A corrected value ("make it fifty pounds", "invoice 4321 instead") -> `✓`."""
+
+SUCCESS_COMPLETENESS_RULES = f"""
+
+CURRENT QUESTION: does the caller want to pay another invoice?
+- A clear yes or no -> `✓`.
+- "yes, invoice..." followed by digit dictation: fewer than {INVOICE_MIN_LEN} digits
+  so far means still dictating -> `○`.
+- "yes, I want to pay" with no details yet is a COMPLETE answer to this question -> `✓`."""
+
 # Fillers spoken the moment the LLM starts a slow function call — masks the
 # lookup + response-generation latency. Only for functions that hit the network;
 # instant functions (FAQ, pay_another, finish_call) get none, silence is better
@@ -540,6 +580,11 @@ class PaymentBot(BaseBot):
     # Read by BaseBot when building the user aggregator: silence for this long after
     # the bot stops speaking fires on_user_turn_idle (the no-input path).
     IDLE_TIMEOUT_S = IDLE_TIMEOUT_S
+
+    # Initial completeness rules (BaseBot hook); node transitions swap in the rules
+    # relevant to that node via the "set_completeness_rules" pre-action.
+    TURN_COMPLETION_GUIDANCE = COLLECT_COMPLETENESS_RULES
+
 
     def __init__(self, config: BotConfig):
         super().__init__(config)
@@ -625,5 +670,12 @@ class PaymentBot(BaseBot):
             # my invoice number, ...) get answered mid-task without leaving the node.
             global_functions=[get_business_info],
         )
+
+        # Per-node completeness rules: nodes carry a set_completeness_rules pre-action
+        # so the judge only holds the rules for the question currently being asked.
+        async def _set_completeness_rules(action: dict, _flow_manager: FlowManager):
+            self.set_turn_completion_rules(action.get("rules", ""))
+
+        self.flow_manager.register_action("set_completeness_rules", _set_completeness_rules)
         self.flow_manager.state["awaiting"] = "invoice"
         await self.flow_manager.initialize(create_collect_node())

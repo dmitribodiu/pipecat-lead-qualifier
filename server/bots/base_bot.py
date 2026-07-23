@@ -32,7 +32,14 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
-from pipecat.turns.user_turn_strategies import UserTurnStrategies
+from pipecat.turns.user_turn_completion_mixin import (
+    USER_TURN_COMPLETION_INSTRUCTIONS,
+    UserTurnCompletionConfig,
+)
+from pipecat.turns.user_turn_strategies import (
+    FilterIncompleteUserTurnStrategies,
+    UserTurnStrategies,
+)
 from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
     SpeechTimeoutUserTurnStopStrategy,
 )
@@ -163,15 +170,29 @@ class BaseBot(ABC):
         # detection; the smart-turn v3 model expects 16 kHz and holds turns open on 8 kHz
         # audio. Daily (16 kHz) keeps the built-in smart-turn analyzer (1.5.0 default).
         if config.transport == "websocket":
-            # Endpointing latency = vad_stop_secs (silence before VAD calls end-of-speech)
-            # + user_speech_timeout (grace for the caller to resume). Lower = snappier
-            # replies; too low = the bot cuts the caller off on natural pauses. ~0.5s total
-            # is responsive; raise if it interrupts mid-sentence.
-            # 0.2 is the value SpeechTimeoutUserTurnStopStrategy's built-in STT p99 latency
-            # tuning assumes; matching it keeps turn-end timing correct and is snappy.
+            # Smart endpointing for 8 kHz telephony (smart-turn v3 needs 16 kHz audio, so
+            # it can't be used here). The silence detector (VAD 0.2s + speech-timeout 0.2s)
+            # only TRIGGERS an LLM inference; the LLM starts its reply with a completion
+            # marker and only a COMPLETE user thought finalizes the turn. Incomplete
+            # utterances ("my invoice number is...") keep the turn open instead of the
+            # bot talking over the caller; trail-offs get re-prompted at 5s/10s.
+            # NOTE: the detector list must be passed explicitly — the container's default
+            # stop strategy is smart-turn v3, which mis-detects on telephony audio.
+            # Bots can append domain rules to the completeness judgment (e.g. "fewer
+            # digits than an invoice number needs = the caller is still dictating") by
+            # defining a TURN_COMPLETION_GUIDANCE class attribute.
             vad_stop_secs = 0.2
-            user_turn_strategies = UserTurnStrategies(
-                stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.2)]
+            guidance = getattr(self, "TURN_COMPLETION_GUIDANCE", "")
+            self.turn_completion_config = (
+                UserTurnCompletionConfig(
+                    instructions=USER_TURN_COMPLETION_INSTRUCTIONS + guidance
+                )
+                if guidance
+                else None
+            )
+            user_turn_strategies = FilterIncompleteUserTurnStrategies(
+                config=self.turn_completion_config,
+                stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.2)],
             )
         else:
             vad_stop_secs = 0.2
@@ -286,6 +307,20 @@ class BaseBot(ABC):
             observers=[latency_observer],
         )
         self.runner = WorkerRunner(handle_sigint=False)
+
+    def set_turn_completion_rules(self, rules: str):
+        """Swap the domain-specific part of the turn-completeness instructions.
+
+        Called on node transitions so the completeness judge only carries the rules
+        relevant to what the current node is asking (instead of one global blob).
+        """
+        if getattr(self, "turn_completion_config", None) is None:
+            return
+        self.turn_completion_config.instructions = USER_TURN_COMPLETION_INSTRUCTIONS + rules
+        # The LLM service composes its system instruction from this config; rebuild it
+        # so the new rules take effect on the next inference.
+        if hasattr(self.llm, "_compose_system_instruction"):
+            self.llm._compose_system_instruction()
 
     async def start(self):
         """Start the bot's main worker."""
