@@ -1,0 +1,33 @@
+# Option C: FreeSWITCH in WSL2 with HOST NETWORKING, so RTP reaches the Windows softphone
+# via WSL2 "mirrored networking". This is the working alternative to Docker Desktop, which
+# cannot pass bidirectional UDP RTP between a Windows softphone and the container's VM.
+#
+# ── One-time prerequisites ────────────────────────────────────────────────────────────
+#   1. Enable WSL2 mirrored networking. In C:\Users\<you>\.wslconfig add:
+#          [wsl2]
+#          networkingMode=mirrored
+#      then in PowerShell:  wsl --shutdown   (reopen Ubuntu afterwards)
+#   2. Run this with NATIVE docker INSIDE the WSL2 Ubuntu distro (docker-ce), NOT Docker
+#      Desktop's engine — only native docker gives real Linux host networking on the
+#      mirrored distro.
+#
+# ── Run (from inside WSL2 Ubuntu) ─────────────────────────────────────────────────────
+#   cd /mnt/c/Projects/pipecat-lead-qualifier-my/docker/freeswitch
+#   docker compose -f docker-compose.wsl.yml up
+#
+# network_mode: host  => FreeSWITCH binds straight to the (mirrored) network, no Docker
+# NAT. The Windows softphone dials sip:5000@<host-lan-ip>:5080 and RTP flows natively.
+# The dialplan points mod_audio_fork at ws://<host-lan-ip>:7860 (the bot, still on Windows).
+services:
+  freeswitch:
+    image: drachtio/drachtio-freeswitch-mrf:latest   # ships mod_audio_fork prebuilt
+    container_name: pcfs-freeswitch
+    restart: unless-stopped
+    network_mode: host                                # real Linux host networking (no NAT)
+    command: ["freeswitch", "--rtp-range-start", "16384", "--rtp-range-end", "16394"]
+    volumes:
+      # Our dialplan context "mrf": answers 5000, forks audio to the bot's WebSocket.
+      - ./freeswitch/conf/dialplan/mrf.xml:/usr/local/freeswitch/conf/dialplan/mrf.xml
+      # Our SIP profile (name="pipecat", binds 5080, auth-calls=false, context=mrf),
+      # mounted over the image's own sip_profiles/mrf.xml.
+      - ./freeswitch/conf/sip_profiles/external.xml:/usr/local/freeswitch/conf/sip_profiles/mrf.xml

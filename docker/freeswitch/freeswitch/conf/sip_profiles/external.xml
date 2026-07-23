@@ -18,8 +18,13 @@
       <param name="sip-port" value="5080"/>
       <param name="rtp-ip" value="$${local_ip_v4}"/>
       <param name="sip-ip" value="$${local_ip_v4}"/>
-      <param name="ext-rtp-ip" value="127.0.0.1"/>
-      <param name="ext-sip-ip" value="127.0.0.1"/>
+      <!-- DEV (Docker Desktop on Windows): advertise the HOST LAN IP so media flows to/from
+           the softphone on the same LAN. 127.0.0.1 does NOT work here — Docker Desktop can't
+           bridge loopback UDP to the host softphone. CHANGE THIS to your machine's LAN IP
+           (`ipconfig`); it was 192.168.0.16 in the SDP. In production (Linux) use the real
+           public/NAT IP or host networking instead. -->
+      <param name="ext-rtp-ip" value="192.168.0.16"/>
+      <param name="ext-sip-ip" value="192.168.0.16"/>
       <param name="aggressive-nat-detection" value="true"/>
       <param name="NDLB-force-rport" value="true"/>
       <param name="apply-nat-acl" value="nat.auto"/>

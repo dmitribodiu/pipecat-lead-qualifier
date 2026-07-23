@@ -23,7 +23,10 @@
 #    Stop it first:  docker compose -f docker/freeswitch/docker-compose.yml down
 services:
   freeswitch:
-    image: drachtio/drachtio-freeswitch-mrf:v1.10.1-full   # mod_audio_fork + lua + curl prebuilt
+    image: drachtio/drachtio-freeswitch-mrf:latest   # base image already ships mod_audio_fork
+    # NOTE: this base image does NOT include mod_lua/mod_curl (needed later for PCI card
+    # capture). When we get there, either build a custom image adding those modules or
+    # pin a tag that bundles them. For the payment flow, the base image is sufficient.
     container_name: pcfs-freeswitch
     restart: unless-stopped
     # The image's entrypoint is `exec freeswitch "$@"`; --rtp-range-* is templated into
@@ -37,10 +40,14 @@ services:
       - "bothost:host-gateway"
       - "host.docker.internal:host-gateway"
     ports:
-      - "127.0.0.1:5080:5080/udp"               # SIP (pipecat profile)
-      - "127.0.0.1:5080:5080/tcp"
-      - "127.0.0.1:8021:8021/tcp"               # ESL (fs_cli / future .NET orchestrator)
-      - "127.0.0.1:16384-16394:16384-16394/udp" # RTP media (pinned via --rtp-range-* above)
+      # SIP + RTP published on ALL interfaces so the softphone reaches them via the host
+      # LAN IP (matches ext-sip-ip/ext-rtp-ip in external.xml). Loopback-only publishing
+      # broke RTP: Docker Desktop can't bridge UDP media between 127.0.0.1 and the
+      # softphone's LAN address, so audio was dead both ways.
+      - "5080:5080/udp"                         # SIP (pipecat profile)
+      - "5080:5080/tcp"
+      - "127.0.0.1:8021:8021/tcp"               # ESL stays loopback-only (do NOT expose to LAN)
+      - "16384-16394:16384-16394/udp"           # RTP media (pinned via --rtp-range-* above)
     volumes:
       # Our dialplan context "mrf": answers 5000, starts uuid_audio_fork to the bot.
       - ./freeswitch/conf/dialplan/mrf.xml:/usr/local/freeswitch/conf/dialplan/mrf.xml

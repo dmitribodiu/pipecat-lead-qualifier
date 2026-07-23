@@ -2,36 +2,92 @@
   <!--
     Pipecat demo dialplan (context "mrf" — where the pipecat SIP profile lands calls).
 
-    5000 -> the AI bot. Uses drachtio's mod_audio_fork (MIT, no concurrency cap).
-    The module attaches a media bug, streams the caller's audio (binary L16 @ 8 kHz)
-    to the Pipecat bot over a WebSocket, and plays the bot's TTS back into the call
-    from the `playAudio` JSON frames the bot sends (no STREAM_PLAYBACK channel var
-    needed — that was mod_audio_stream's gate).
+    5000 -> the AI bot. drachtio mod_audio_fork (MIT) streams the caller's audio
+    (binary L16 @ 8 kHz) to the Pipecat bot over a WebSocket.
 
-       uuid_audio_fork <uuid> start ws://bothost:7860/audio mono 8k
-         mix-type = mono (caller only) ; sampling-rate = 8k
+       uuid_audio_fork <uuid> start ws://192.168.0.16:7860/audio mono 8k
 
-    Barge-in: the bot sends {"type":"killAudio"} on interruption to flush playback.
+    WS URL = the Windows host LAN IP where the bot listens (bot stays on Windows). With
+    WSL2 mirrored networking, FreeSWITCH-in-WSL reaches the Windows bot at this address.
+    CHANGE 192.168.0.16 to your host LAN IP (`ipconfig`) if it differs.
 
-    7000 -> answer + park (no fork). Test extension for automated loopback checks:
-       originate {origination_uuid=X}loopback/7000/mrf &park()
+    ====================================================================================
+    STATUS (2026-07-23): CAPTURE works (caller -> STT -> LLM -> flow, verified). PLAYBACK
+    (bot -> caller) DOES NOT WORK with this image's mod_audio_fork build, and is the one
+    open item. Root cause is understood; the exact enable-incantation is not.
 
+    Findings (from binary `strings` of the image's mod_audio_fork.so, since no matching
+    public source exists — davehorton's repo 404s; mdslaney/dochong clones are older and
+    lack this feature):
+      * This build DOES support bidirectional playback — two modes:
+          - playAudio JSON  -> temp file (.r16/.wav) -> broadcast into channel
+          - raw BINARY back -> real-time inject via SWITCH_ABC_TYPE_WRITE_REPLACE
+        Both are OFF BY DEFAULT. Inbound binary is dropped with
+        "received unexpected binary frame, discarding" until stream mode is enabled.
+      * The API usage string lists enabling args:
+          <uuid> start <url> [mono|mixed|stereo] [8000..] [bugname] [metadata]
+                 [bidirectionalAudio_enabled] [bidirectionalAudio_stream_enabled]
+                 [bidirectionalAudio_stream_samplerate]
+      * Verified via an automated harness (FS originates a SIP call into 5000, records
+        what the caller hears, measures level; native-playback control on 5001 PASSES,
+        so the harness is sound). None of these enabled playback:
+          positional `0 1 8000`, `1 1 8000`, `true true 8000`, JSON `{}` metadata,
+          `8k` vs `8000` rate, the `audio.drachtio.org` subprotocol on the peer,
+          and channel vars bidirectional_audio_(enable|stream_enable|sample_rate).
+      * Earlier "mixed"/"stereo" broke capture too; that was the parked-leg no-write-cycle
+        issue (send_silence_when_idle fixed capture but not playback).
+
+    Reliable paths forward (pick per the bigger prod-architecture decision):
+      (a) Get the enable syntax from the drachtio/jambonz author or a jambonz deployment
+          (jambonz uses this exact build for two-way audio in production).
+      (b) Bypass mod_audio_fork playback: native FS `uuid_broadcast`/`playback` driven
+          over ESL from the bot (native playback is PROVEN here — the 5001 control).
+      (c) Revert playback to amigniter mod_audio_stream (real-time streamAudio inject,
+          works with a Pipecat bot; free tier <=10 concurrent — a prod-scale licensing
+          decision, not a dev blocker).
+    ====================================================================================
+
+    7000 -> answer + park (no fork). 5001 -> native tone playback (harness control).
     Reload after edits:  docker exec pcfs-freeswitch fs_cli -x reloadxml
   -->
   <context name="mrf">
     <extension name="pipecat-bot">
       <condition field="destination_number" expression="^5000$">
         <action application="answer"/>
-        <!-- NOTE: no send_silence_when_idle here. On parked sofia channels it fed the
-             media bug ragged write-frames and chopped playback (loopback calls without
-             it played pristine audio). -->
-        <action application="set" data="stream=${uuid_audio_fork(${uuid} start ws://bothost:7860/audio mono 8k)}"/>
+        <!-- send_silence_when_idle gives the channel a continuous outbound write-frame
+             cycle for mod_audio_fork's WRITE_REPLACE to inject bot audio into (without it,
+             a parked leg has no write frames and playback is silent). -->
+        <action application="set" data="send_silence_when_idle=-1"/>
+        <!-- jambonz PIPE-delimited (^^|) invocation, bidirectional binary STREAMING on.
+             Fields: uuid|start|url|mix|sampling|bugname|metadata|enabled|streaming|rate.
+             enabled=true streaming=true rate=8000 -> bot sends raw L16 binary frames,
+             module injects them in real time. (Space-delimited args do NOT enable this.) -->
+        <action application="set" data="stream=${uuid_audio_fork(^^|${uuid}|start|ws://192.168.0.16:7860/audio|mono|8000|||true|true|8000)}"/>
         <action application="park"/>
       </condition>
     </extension>
     <extension name="parked-test-leg">
       <condition field="destination_number" expression="^7000$">
         <action application="answer"/>
+        <action application="park"/>
+      </condition>
+    </extension>
+    <!-- Harness control: native FS playback of a 480Hz tone (no fork). Proves the
+         record-and-measure harness detects channel-write audio. -->
+    <extension name="control-playback-tone">
+      <condition field="destination_number" expression="^5001$">
+        <action application="answer"/>
+        <action application="playback" data="tone_stream://%(60000,0,480)"/>
+      </condition>
+    </extension>
+    <!-- TEST (5003): fork to tone WS server (7862) with jambonz's PIPE-delimited (^^|)
+         invocation, bidirectional binary STREAMING on (enabled|streaming|rate = true|true|8000).
+         Fields: uuid|start|url|mix|sampling|bugname|metadata|enabled|streaming|rate. -->
+    <extension name="stream-inject-test">
+      <condition field="destination_number" expression="^5003$">
+        <action application="answer"/>
+        <action application="set" data="send_silence_when_idle=-1"/>
+        <action application="set" data="stream=${uuid_audio_fork(^^|${uuid}|start|ws://192.168.0.16:7862/audio|mono|8000|||true|true|8000)}"/>
         <action application="park"/>
       </condition>
     </extension>

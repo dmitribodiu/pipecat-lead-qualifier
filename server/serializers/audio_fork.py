@@ -85,10 +85,17 @@ class AudioForkSerializer(FrameSerializer):
         return None  # other control events ignored
 
     async def serialize(self, frame: Frame) -> str | bytes | None:
-        """us -> FreeSWITCH. TTS audio becomes playAudio JSON; barge-in becomes killAudio."""
+        """us -> FreeSWITCH. TTS audio -> raw binary L16; barge-in -> killAudio.
+
+        mod_audio_fork bidirectional STREAM mode injects raw binary frames into the call
+        in real time (via WRITE_REPLACE). It must be enabled on the dialplan's
+        ``uuid_audio_fork start`` with the PIPE-delimited (``^^|``) form and
+        ``...|true|true|<rate>`` (enabled|streaming|samplerate), plus
+        ``send_silence_when_idle`` on the channel so there are write frames to replace.
+        See docker/freeswitch/.../dialplan/mrf.xml. This streams frame-by-frame with no
+        buffering; it does NOT use the ``playAudio`` JSON / temp-file path.
+        """
         if isinstance(frame, InterruptionFrame):
-            # Barge-in: tell mod_audio_fork to drop whatever it has queued so the bot
-            # stops talking immediately instead of finishing the buffered utterance.
             return json.dumps({"type": "killAudio"})
         if isinstance(frame, OutputAudioRawFrame):
             self._sent_msgs += 1
@@ -96,17 +103,8 @@ class AudioForkSerializer(FrameSerializer):
             if self._sent_msgs == 1 or self._sent_msgs % 100 == 0:
                 secs = self._sent_bytes / (frame.sample_rate * 2)
                 logger.debug(
-                    f"playAudio out: msg #{self._sent_msgs}, rate={frame.sample_rate}, "
+                    f"binary audio out: msg #{self._sent_msgs}, rate={frame.sample_rate}, "
                     f"chunk={len(frame.audio)}B, total {self._sent_bytes}B (~{secs:.2f}s)"
                 )
-            return json.dumps(
-                {
-                    "type": "playAudio",
-                    "data": {
-                        "audioContentType": "raw",
-                        "sampleRate": frame.sample_rate,
-                        "audioContent": base64.b64encode(frame.audio).decode("ascii"),
-                    },
-                }
-            )
+            return frame.audio  # raw L16 PCM -> binary WS frame -> mod_audio_fork inject
         return None
