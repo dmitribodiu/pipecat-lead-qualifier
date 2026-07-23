@@ -104,7 +104,7 @@ class BotConfig:
 
     @property
     def transport(self) -> str:
-        """Transport backend: 'websocket' (FreeSWITCH/mod_audio_stream) or 'daily'."""
+        """Transport backend: 'websocket' (FreeSWITCH/mod_audio_fork) or 'daily'."""
         value = os.getenv("TRANSPORT", "websocket").lower()
         return value if value in ("websocket", "daily") else "websocket"
 

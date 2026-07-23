@@ -112,14 +112,14 @@ app.add_middleware(
 
 @app.websocket("/audio")
 async def audio_websocket(websocket: WebSocket):
-    """FreeSWITCH mod_audio_stream entrypoint.
+    """FreeSWITCH mod_audio_fork entrypoint.
 
-    The dialplan starts `uuid_audio_stream ... ws://<host>:<port>/audio mono 8000`,
+    The dialplan starts `uuid_audio_fork ... ws://<host>:<port>/audio mono 8k`,
     which opens this WebSocket. We build a bot for the call, run it in-process for the
     duration of the connection, and clean up when FreeSWITCH disconnects.
     """
     await websocket.accept()
-    logger.info("FreeSWITCH mod_audio_stream connected on /audio")
+    logger.info("FreeSWITCH mod_audio_fork connected on /audio")
 
     config = BotConfig()
     if config.bot_type == "payment":

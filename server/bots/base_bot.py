@@ -2,8 +2,8 @@
 
 Supports two transports, selected by ``config.transport``:
 
-- ``websocket`` (default): FreeSWITCH via ``mod_audio_stream`` over a FastAPI
-  WebSocket (``FastAPIWebsocketTransport`` + ``AudioStreamSerializer``), 8 kHz
+- ``websocket`` (default): FreeSWITCH via ``mod_audio_fork`` over a FastAPI
+  WebSocket (``FastAPIWebsocketTransport`` + ``AudioForkSerializer``), 8 kHz
   telephony audio. Runs natively on Windows (no ``daily-python``). Endpointing is
   VAD-only (``SpeechTimeoutUserTurnStopStrategy``) — the smart-turn v3 model expects
   16 kHz and mis-detects turn ends on 8 kHz telephony audio.
@@ -63,7 +63,7 @@ from pipecat.services.rime.tts import RimeHttpTTSService
 from pipecat.services.google.llm import GoogleLLMService
 from pipecat.services.openai.llm import OpenAILLMService
 
-from serializers.audio_stream import AudioStreamSerializer
+from serializers.audio_fork import AudioForkSerializer
 
 
 class BaseBot(ABC):
@@ -219,13 +219,13 @@ class BaseBot(ABC):
             audio_in_enabled=True,
             audio_out_enabled=True,
             add_wav_header=False,
-            # Output audio buffering. Each streamAudio message carries this many 10ms
-            # chunks; larger = more cushion for mod_audio_stream against host<->container
+            # Output audio buffering. Each playAudio message carries this many 10ms
+            # chunks; larger = more cushion for mod_audio_fork against host<->container
             # WebSocket jitter (fewer playback under-runs / less choppiness), at the cost
             # of a little more latency. 4 = 40ms. Raise to 6-8 if still choppy; lower
             # toward 2 to trim latency.
             audio_out_10ms_chunks=4,
-            serializer=AudioStreamSerializer(self.sample_rate),
+            serializer=AudioForkSerializer(self.sample_rate),
         )
 
         # Populated by a setup_*_transport call.
@@ -234,7 +234,7 @@ class BaseBot(ABC):
         self.runner: Optional[WorkerRunner] = None
 
     async def setup_websocket_transport(self, websocket):
-        """Set up the FastAPI WebSocket transport for a FreeSWITCH mod_audio_stream call."""
+        """Set up the FastAPI WebSocket transport for a FreeSWITCH mod_audio_fork call."""
         self.transport = FastAPIWebsocketTransport(websocket=websocket, params=self.ws_params)
 
         @self.transport.event_handler("on_client_connected")

@@ -1,5 +1,5 @@
 """Frame serializers for the lead-qualifier server."""
 
-from .audio_stream import AudioStreamSerializer
+from .audio_fork import AudioForkSerializer
 
-__all__ = ["AudioStreamSerializer"]
+__all__ = ["AudioForkSerializer"]
