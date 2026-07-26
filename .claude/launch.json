@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "bot-server",
+      "runtimeExecutable": "C:/Projects/pipecat-lead-qualifier-my/server/.venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "main", "--port", "7860"],
+      "cwd": "C:/Projects/pipecat-lead-qualifier-my/server",
+      "port": 7860
+    }
+  ]
+}

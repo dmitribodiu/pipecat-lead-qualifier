@@ -671,6 +671,10 @@ class PaymentBot(BaseBot):
             global_functions=[get_business_info],
         )
 
+        # Debug: when TRACE_CALLS=1, dump a context snapshot on every node change so the
+        # trace shows whether each node's task_messages actually reach the LLM context.
+        self.trace_flow_nodes(self.flow_manager)
+
         # Per-node completeness rules: nodes carry a set_completeness_rules pre-action
         # so the judge only holds the rules for the question currently being asked.
         async def _set_completeness_rules(action: dict, _flow_manager: FlowManager):

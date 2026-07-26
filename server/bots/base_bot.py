@@ -288,6 +288,21 @@ class BaseBot(ABC):
         # starting to speak, logged per turn with a per-service (STT/LLM/TTS) breakdown.
         latency_observer = UserBotLatencyObserver()
 
+        observers = [latency_observer]
+
+        # Optional per-call frame trace (TRACE_CALLS=1). Records every frame push to a
+        # JSONL file under server/traces/ for post-call inspection (convert to a Perfetto
+        # timeline with tools/trace_to_perfetto.py). Exposed on self so subclasses can
+        # inject custom markers (e.g. a context dump after a flow node change).
+        self.trace_observer = None
+        if getattr(self.config, "trace_calls", False):
+            from observers.frame_trace import FrameTraceObserver
+
+            self.trace_observer = FrameTraceObserver(
+                include_audio=getattr(self.config, "trace_audio", False)
+            )
+            observers.append(self.trace_observer)
+
         @latency_observer.event_handler("on_latency_measured")
         async def _on_latency(_observer, latency: float):
             logger.info(f"Voice-to-voice latency: {latency:.2f}s (user stopped -> bot speaking)")
@@ -304,9 +319,42 @@ class BaseBot(ABC):
                 enable_metrics=True,
                 enable_usage_metrics=True,
             ),
-            observers=[latency_observer],
+            observers=observers,
         )
         self.runner = WorkerRunner(handle_sigint=False)
+
+    def trace_flow_nodes(self, flow_manager):
+        """When call tracing is on, dump a compact context snapshot on every flow node
+        change (a ``mark:set_node`` line in the trace).
+
+        On every ``_set_node`` (initialize, transitions, ``set_node_from_config`` all
+        funnel through it), captures the context right after the node is applied — answers
+        "do the new node's ``task_messages`` actually land in the context the LLM sees?"
+        No-op if tracing is off, so bots can call it unconditionally.
+        """
+        if flow_manager is None or not self.trace_observer:
+            return
+
+        original = flow_manager._set_node
+
+        async def _traced_set_node(node_id, node_config, *args, **kwargs):
+            result = await original(node_id, node_config, *args, **kwargs)
+            try:
+                msgs = self.context.messages
+                snapshot = [
+                    {"role": getattr(m, "role", None)
+                     or (m.get("role") if isinstance(m, dict) else None),
+                     "preview": repr(m)[:160]}
+                    for m in msgs
+                ]
+                self.trace_observer.mark(
+                    "set_node", note=node_id, count=len(msgs), context=snapshot
+                )
+            except Exception as e:
+                logger.debug(f"trace_flow_nodes mark failed: {e}")
+            return result
+
+        flow_manager._set_node = _traced_set_node
 
     def set_turn_completion_rules(self, rules: str):
         """Swap the domain-specific part of the turn-completeness instructions.

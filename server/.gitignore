@@ -6,7 +6,11 @@ __pycache__/
 .Python
 env/
 venv/
+.venv/
 .env
+
+# Per-call frame traces (FrameTraceObserver output)
+traces/
 build/
 develop-eggs/
 dist/

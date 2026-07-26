@@ -120,6 +120,17 @@ class BotConfig:
         return self._is_truthy(os.getenv("ECHO_MUTE", "false"))
 
     @property
+    def trace_calls(self) -> bool:
+        """Write a per-call frame trace (JSONL) via FrameTraceObserver. Off by default;
+        set TRACE_CALLS=1 to record. Set TRACE_AUDIO=1 to also include raw audio frames."""
+        return self._is_truthy(os.getenv("TRACE_CALLS", "false"))
+
+    @property
+    def trace_audio(self) -> bool:
+        """Include raw audio frames in the call trace (very high frequency). Default off."""
+        return self._is_truthy(os.getenv("TRACE_AUDIO", "false"))
+
+    @property
     def bot_name(self) -> str:
         return os.getenv("BOT_NAME", "Marissa")
 
