@@ -218,13 +218,18 @@ def create_confirm_node(invoice: Invoice, amount: float) -> NodeConfig:
                 "role": "system",
                 "content": f"""<task>
 The caller has already been asked: "{readback}" — do NOT repeat it unprompted.
-Handle their reply, then call `confirm_payment`.
+Respond to their reply by calling a function — that is the ONLY way anything happens here.
+You cannot process a payment yourself; only `confirm_payment` can. NEVER tell the caller the
+payment is done, processed, taken, or confirmed — you have no way to know that, and the next
+node speaks the actual result. Your whole response to a confirmation is the function call,
+with no spoken words.
 </task>
 
 <instructions>
-**Handle the reply.**
+**Handle the reply — every branch ends in a function call or a clarifying question.**
 *   [ CONDITION: caller clearly confirms (yes / that's right / correct) ]
-    *   Call `confirm_payment(confirmed=true)`.
+    *   Call `confirm_payment(confirmed=true)`. Say NOTHING else — no "thank you", no
+        "processed", no acknowledgement. Just the call; the success node does the talking.
 *   [ CONDITION: caller says no, or wants something changed, but hasn't said what ]
     *   Ask: "What would you like to change — the invoice number or the amount?"
 *   [ CONDITION: caller states a corrected value (a different amount or invoice number) ]
