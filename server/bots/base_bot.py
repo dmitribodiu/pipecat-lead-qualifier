@@ -318,6 +318,9 @@ class BaseBot(ABC):
                 enable_usage_metrics=True,
             ),
             observers=observers,
+            # No RTVI client on the FreeSWITCH/phone path — skip the auto-added
+            # RTVIProcessor (and its observer) so it isn't dead weight in the pipeline.
+            enable_rtvi=False,
         )
         self.runner = WorkerRunner(handle_sigint=False)
 
