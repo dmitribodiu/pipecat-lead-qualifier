@@ -142,6 +142,32 @@ class BotConfig:
         """Port the Whisker WebSocket server binds (the UI connects here)."""
         return int(os.getenv("WHISKER_PORT", "9090"))
 
+    # ── FreeSWITCH ESL (control plane: hang up the call at end-of-flow) ───────
+    @property
+    def enable_esl_hangup(self) -> bool:
+        """Hang up the FreeSWITCH channel (via ESL uuid_kill) when the call's audio-fork
+        socket closes — so ending the flow actually drops the caller instead of leaving
+        them parked in silence. Needs the fork URL to carry ?uuid=${uuid}. Default on."""
+        return self._is_truthy(os.getenv("ESL_HANGUP", "true"))
+
+    @property
+    def fs_esl_host(self) -> str:
+        return os.getenv("FS_ESL_HOST", "127.0.0.1")
+
+    @property
+    def fs_esl_port(self) -> int:
+        return int(os.getenv("FS_ESL_PORT", "8021"))
+
+    @property
+    def fs_esl_password(self) -> str:
+        return os.getenv("FS_ESL_PASSWORD", "ClueCon")
+
+    @property
+    def hangup_delay_s(self) -> float:
+        """Grace period after the fork socket closes before uuid_kill, so a final
+        'goodbye' has time to finish playing. Default 1s."""
+        return float(os.getenv("HANGUP_DELAY_MS", "1000")) / 1000.0
+
     @property
     def bot_name(self) -> str:
         return os.getenv("BOT_NAME", "Marissa")

@@ -61,7 +61,7 @@ The caller wants the balance on a {bt.noun}. You asked for their {bt.ref_word}.
 </instructions>""",
             }
         ],
-        "functions": [submit_reference, get_business_info],
+        "functions": [submit_reference],
     }
 
 

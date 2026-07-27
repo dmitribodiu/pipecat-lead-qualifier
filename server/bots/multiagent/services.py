@@ -18,6 +18,8 @@ from bots.multiagent.intent import BillInfo
 # TODO(you): replace with real per-bill-type lookups (async DB / HTTP client).
 _MOCK_PARKING = {
     "1001": BillInfo("parking", "1001", "City Parking", 54.30),
+    "1002": BillInfo("parking", "1002", "City Parking", 25.00),
+    "1003": BillInfo("parking", "1003", "City Parking", 12.50),
     "234": BillInfo("parking", "234", "City Parking", 40.00),
 }
 _MOCK_WATER = {

@@ -56,52 +56,47 @@ def build_junction_node(info: BillInfo, arrival: str) -> NodeConfig:
             {
                 "role": "system",
                 "content": f"""<task>
-The caller has been told: "{balance} {opener}" — do not repeat it. Handle their reply.
+The caller has been told: "{balance} {opener}" — do not repeat it. Respond ONLY by
+calling a function, never with plain text.
 </task>
 <instructions>
-*   [ CONDITION: caller wants to pay (or gives an amount) ] -> call `proceed_payment` with
-    the amount if they gave one, else no amount.
-*   [ CONDITION: caller does not want to pay / is just asking ] -> call `back_to_menu`.
+*   [ CONDITION: caller agrees to pay ("yes", "pay it", "go ahead") ] -> call
+    `proceed_payment` (we then ask how much they'd like to pay). If they already named an
+    amount, pass it as `amount`.
+*   [ CONDITION: caller declines, or only wanted the balance ] -> call `back_to_menu`.
 </instructions>""",
             }
         ],
-        "functions": [proceed_payment, back_to_menu, get_business_info],
+        "functions": [proceed_payment, back_to_menu],
     }
 
 
 async def proceed_payment(
     flow_manager: FlowManager, amount: float = 0
 ) -> Tuple[dict, Optional[NodeConfig]]:
-    """Caller wants to pay the looked-up bill.
+    """Caller agreed to pay the looked-up bill.
+
+    Move into that bill type's collection to gather whatever's still needed — chiefly the
+    amount, so the caller can pay a partial amount — seeding what the inquiry already
+    resolved (the reference, and the amount if they named one).
 
     Args:
-        amount: the amount in pounds, if the caller stated one (omit / 0 if not).
+        amount: the amount in pounds if the caller named a specific one; else 0 and we ask.
     """
     state = flow_manager.state
     info: BillInfo = state.get("bill_info")
     if info is None:
         return {"status": "error", "error": "no bill in context"}, None
 
-    # If we still need more than ref+amount for this bill type, route into its
-    # collection with the known slots seeded. Otherwise settle directly.
-    from bots.multiagent.intent import BILL_TYPES
-
-    bt = BILL_TYPES.get(info.bill_type)
-    needs_more = bool(bt and any(s.slot not in ("reference", "amount") for s in bt.steps))
+    state["bill_type"] = info.bill_type
+    slots = state.setdefault("intent_slots", {})
+    slots["reference"] = info.reference  # already resolved by the inquiry lookup
     if amount:
-        state.setdefault("intent_slots", {})["amount"] = amount
+        slots["amount"] = amount
 
-    if needs_more:
-        from bots.multiagent.collection import advance_collection
+    from bots.multiagent.collection import advance_collection
 
-        return {"status": "collecting"}, await advance_collection(flow_manager, info.bill_type)
-
-    # ref + amount is enough -> straight to settlement
-    if not amount:
-        return {"status": "need_amount", "hint": "Ask how much they want to pay."}, None
-    intent = PaymentIntent(info.bill_type, info.reference, float(amount), info.payee, info.currency)
-    state["intent"] = intent
-    return {"status": "confirming"}, build_confirm_node(intent)
+    return {"status": "collecting"}, await advance_collection(flow_manager, info.bill_type)
 
 
 async def back_to_menu(flow_manager: FlowManager) -> Tuple[dict, NodeConfig]:
@@ -127,19 +122,22 @@ def build_confirm_node(intent: PaymentIntent) -> NodeConfig:
             {
                 "role": "system",
                 "content": f"""<task>
-The caller has been asked: "{readback}" — do not repeat it. Respond ONLY by calling a
-function; you cannot process a payment yourself and must NEVER say it is done/processed —
-the next node speaks the result.
+The caller has been asked: "{readback}" — do not repeat it. You cannot process a payment
+yourself and must NEVER say it is done/processed — the next node speaks the result.
 </task>
 <instructions>
 *   [ CONDITION: caller confirms (yes/correct) ] -> call `confirm_payment(confirmed=true)`,
     say nothing else.
-*   [ CONDITION: caller wants to cancel ] -> call `confirm_payment(confirmed=false, cancel=true)`.
-*   [ CONDITION: caller wants to change something ] -> ask what to change.
+*   [ CONDITION: caller names a different amount to pay instead ] -> call `proceed_payment`
+    with that `amount` (it re-reads the new amount back for confirmation).
+*   [ CONDITION: caller wants to change the amount but hasn't said how much ] -> ask
+    "How much would you like to pay instead?"
+*   [ CONDITION: caller wants to cancel entirely ] -> call
+    `confirm_payment(confirmed=false, cancel=true)`.
 </instructions>""",
             }
         ],
-        "functions": [confirm_payment],
+        "functions": [confirm_payment, proceed_payment],
     }
 
 
@@ -167,30 +165,16 @@ async def confirm_payment(
         logger.error(f"payment failed: {result.error}")
         return {"status": "error", "error": result.error}, build_failure_node()
 
-    _clear_payment(state)
-    return {"status": "success", "order_id": result.order_id}, build_success_node(result.order_id, intent)
-
-
-def build_success_node(order_id: str, intent: PaymentIntent) -> NodeConfig:
-    """Scripted success line, then hand back to the Concierge to drain the queue."""
+    # Announce success and flow straight into the menu (or the next queued payment) so the
+    # bot proactively asks "anything else?" instead of going silent.
     line = (
         f"Your payment of {intent.amount:.2f} pounds for {intent.bill_type} "
-        f"{_spaced(intent.reference)} is done. Your reference is {_spaced(order_id)}."
+        f"{_spaced(intent.reference)} is done. Your reference is {_spaced(result.order_id)}."
     )
-    return {
-        "name": "success",
-        "role_message": _ROLE,
-        "pre_actions": [{"type": "tts_say", "text": line}],
-        "respond_immediately": False,
-        "task_messages": [
-            {
-                "role": "system",
-                "content": f'The caller was told: "{line}" Now call `after_payment` to '
-                "continue (it moves on to the next queued item or asks what's next).",
-            }
-        ],
-        "functions": [after_payment],
-    }
+    _clear_payment(state)
+    from bots.multiagent.concierge import resume
+
+    return {"status": "success", "order_id": result.order_id}, await resume(flow_manager, preface=line)
 
 
 async def after_payment(flow_manager: FlowManager) -> Tuple[dict, NodeConfig]:

@@ -119,7 +119,10 @@ async def audio_websocket(websocket: WebSocket):
     duration of the connection, and clean up when FreeSWITCH disconnects.
     """
     await websocket.accept()
-    logger.info("FreeSWITCH mod_audio_fork connected on /audio")
+    # The dialplan fork URL carries ?uuid=${uuid}, so we know which FreeSWITCH channel
+    # this media socket belongs to — needed to hang the call up over ESL at end-of-flow.
+    call_uuid = websocket.query_params.get("uuid")
+    logger.info(f"FreeSWITCH mod_audio_fork connected on /audio (uuid={call_uuid})")
 
     config = BotConfig()
     if config.bot_type == "payment":
@@ -147,6 +150,21 @@ async def audio_websocket(websocket: WebSocket):
         logger.exception(f"Bot terminated with error: {e}")
     finally:
         await bot.cleanup()
+        # End-of-flow: the pipeline is done and the fork socket is closed, but the
+        # FreeSWITCH channel is still parked. Drop it over ESL so the caller isn't left
+        # in silence. No-op if the caller already hung up. Done here (not in a transport
+        # event) so it survives worker teardown.
+        if call_uuid and config.enable_esl_hangup:
+            if config.hangup_delay_s > 0:
+                await asyncio.sleep(config.hangup_delay_s)  # let a final "goodbye" flush
+            from esl_client import hangup
+
+            await hangup(
+                call_uuid,
+                host=config.fs_esl_host,
+                port=config.fs_esl_port,
+                password=config.fs_esl_password,
+            )
         logger.info("Bot session ended")
 
 

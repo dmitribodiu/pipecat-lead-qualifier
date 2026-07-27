@@ -43,15 +43,22 @@ async def advance_collection(flow_manager: FlowManager, bill_type: str) -> NodeC
     state = flow_manager.state
     state["bill_type"] = bill_type
     slots = state.setdefault("intent_slots", {})
+    not_found = None
     if slots.get("reference") and "bill_info" not in state:
         info = await lookup(bill_type, str(slots["reference"]))
         if info is None:
-            slots.pop("reference", None)  # re-ask it
-            logger.info(f"{bill_type} reference not found; re-asking")
+            # e.g. a queued ticket that turns out not to exist — discovered here, mid-flow.
+            not_found = slots.pop("reference", None)
+            logger.info(f"{bill_type} reference {not_found} not found; re-asking")
         else:
             state["bill_info"] = info
     if _remaining(state, bill_type):
-        return build_collection_entry(flow_manager, bill_type)
+        node = build_collection_entry(flow_manager, bill_type)
+        if not_found:
+            from bots.multiagent.concierge import _prepend_say
+
+            _prepend_say(node, f"I couldn't find {BILL_TYPES[bill_type].noun} {not_found}.")
+        return node
     return _to_settlement(flow_manager)
 
 
@@ -79,8 +86,9 @@ def build_collection_entry(flow_manager: FlowManager, bill_type: str) -> NodeCon
                 "role": "system",
                 "content": f"""<task>
 You are collecting details to pay a {bt.noun}. You just asked: "{step.ask}".
-Call `record_slots` with whatever value(s) the caller provides. Do not ask for values
-you already have. When everything is collected you'll be moved to confirmation.
+Respond by calling a function, not with plain text. Call `record_slots` with whatever
+value(s) the caller provides, and NEVER ask them to repeat a value they already gave.
+When everything is collected you'll be moved to confirmation.
 </task>
 <fields>
 {fields_help}
@@ -95,7 +103,7 @@ you already have. When everything is collected you'll be moved to confirmation.
         ],
         # One collector fn serves both bill types (union of slots). TODO(you): split into
         # record_parking / record_water for cleaner per-agent tool schemas if you prefer.
-        "functions": [record_slots, explain_current_field, cancel_payment, get_business_info],
+        "functions": [record_slots, explain_current_field, cancel_payment],
     }
 
 

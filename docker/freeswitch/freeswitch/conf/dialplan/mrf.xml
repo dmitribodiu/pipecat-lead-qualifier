@@ -62,7 +62,9 @@
              Fields: uuid|start|url|mix|sampling|bugname|metadata|enabled|streaming|rate.
              enabled=true streaming=true rate=8000 -> bot sends raw L16 binary frames,
              module injects them in real time. (Space-delimited args do NOT enable this.) -->
-        <action application="set" data="stream=${uuid_audio_fork(^^|${uuid}|start|ws://192.168.0.16:7860/audio|mono|8000|||true|true|8000)}"/>
+        <!-- ?uuid=${uuid} lets the bot learn the channel UUID so it can hang the call up
+             over ESL at end-of-flow (uuid_kill); without it the caller stays parked. -->
+        <action application="set" data="stream=${uuid_audio_fork(^^|${uuid}|start|ws://192.168.0.16:7860/audio?uuid=${uuid}|mono|8000|||true|true|8000)}"/>
         <action application="park"/>
       </condition>
     </extension>

@@ -35,7 +35,7 @@ def build_greeting_node() -> NodeConfig:
         ],
         "respond_immediately": False,
         "task_messages": [_ROUTER_TASK],
-        "functions": [route, get_business_info],
+        "functions": [route],
     }
 
 
@@ -49,26 +49,33 @@ def build_menu_node(flow_manager: FlowManager, preface: str = "") -> NodeConfig:
         "respond_immediately": False,
         "task_messages": [_ROUTER_TASK, {"role": "system",
             "content": "If the caller is finished, call `end_call`."}],
-        "functions": [route, end_call, get_business_info],
+        "functions": [route, end_call],
     }
 
 
 _ROUTER_TASK = {
     "role": "system",
     "content": """<task>
-Turn what the caller wants into requests, then call `route`. Pass `requests_json` as a
-JSON array STRING. Each element is an object with keys:
+Your ONLY job here is to call `route`. Do NOT reply with plain text, do NOT ask the
+caller any question, and NEVER ask them to repeat a value they already gave — if they
+named a ticket or account number, use it. As soon as you know what they want, call
+`route(requests_json=...)`; the flow will ask for anything still missing. If you're
+unsure of the bill type, still call `route` and just omit bill_type.
+If the caller lists SEVERAL bills or tickets (e.g. "two parking tickets, 1001 and 1002"),
+include EVERY one as its own object in the requests array in a single call — never drop
+any and never handle only the first.
+
+Pass `requests_json` as a JSON array STRING; each element is an object with keys:
   action:    "pay" or "inquire"   (inquire = they only want to know a balance)
-  bill_type: "parking" or "water" (omit if unclear — we'll ask)
+  bill_type: "parking" or "water" (omit only if genuinely unclear)
   reference: the ticket/account number if they gave one, else omit
   amount:    the number of pounds if they gave one, else omit
 Examples:
   "pay 34 for parking 1001 and my water bill 2220"
      -> route(requests_json='[{"action":"pay","bill_type":"parking","reference":"1001","amount":34},{"action":"pay","bill_type":"water","reference":"2220"}]')
-  "what's the balance on parking ticket 234?"
-     -> route(requests_json='[{"action":"inquire","bill_type":"parking","reference":"234"}]')
-Do not ask for details you can put straight into a request — `route` drives the rest.
-For general business questions call `get_business_info` instead.
+  "check my parking ticket 1001"
+     -> route(requests_json='[{"action":"inquire","bill_type":"parking","reference":"1001"}]')
+For a general business question (hours, contact) call `get_business_info` instead.
 </task>""",
 }
 
@@ -120,7 +127,11 @@ async def route(flow_manager: FlowManager, requests_json: str = "[]") -> Tuple[d
 
 
 async def resume(flow_manager: FlowManager, preface: str = "") -> NodeConfig:
-    """Clear the finished item's working state, then start the next queued item (or menu)."""
+    """Clear the finished item's working state, then start the next queued item (or menu).
+
+    ``preface`` (e.g. a just-finished payment confirmation) is spoken before whatever
+    comes next — the menu question, or the next queued item's prompt.
+    """
     state = flow_manager.state
     for k in _WORKING_KEYS:
         state.pop(k, None)
@@ -128,7 +139,21 @@ async def resume(flow_manager: FlowManager, preface: str = "") -> NodeConfig:
     if item is None:
         return build_menu_node(flow_manager, preface)
     state["current"] = item
-    return await dispatch(flow_manager, item)
+    node = await dispatch(flow_manager, item)
+    if preface:
+        _prepend_say(node, preface)
+    return node
+
+
+def _prepend_say(node: NodeConfig, text: str) -> None:
+    """Prepend a spoken line to a node's first tts_say (announce a finished action before
+    the next node's prompt)."""
+    pre = node.setdefault("pre_actions", [])
+    for a in pre:
+        if a.get("type") == "tts_say":
+            a["text"] = f"{text} {a['text']}"
+            return
+    pre.insert(0, {"type": "tts_say", "text": text})
 
 
 async def dispatch(flow_manager: FlowManager, item: QueueItem) -> NodeConfig:
@@ -166,7 +191,7 @@ def build_ask_billtype_node(action: str) -> NodeConfig:
                          f"water bill you'd like to {verb}?"}],
         "respond_immediately": False,
         "task_messages": [_ROUTER_TASK],
-        "functions": [route, get_business_info],
+        "functions": [route],
     }
 
 
