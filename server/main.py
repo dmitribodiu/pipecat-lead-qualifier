@@ -126,6 +126,10 @@ async def audio_websocket(websocket: WebSocket):
         from bots.payment import PaymentBot
 
         bot = PaymentBot(config)
+    elif config.bot_type == "multiagent":
+        from bots.multiagent.bot import MultiAgentPaymentBot
+
+        bot = MultiAgentPaymentBot(config)
     elif config.bot_type == "flow":
         from bots.flow import FlowBot
 
@@ -171,7 +175,7 @@ def parse_server_args():
         "-b",
         "--bot-type",
         type=str.lower,
-        choices=["simple", "flow", "payment"],
+        choices=["simple", "flow", "payment", "multiagent"],
         help="Bot variant",
     )
 

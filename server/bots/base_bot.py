@@ -243,8 +243,7 @@ class BaseBot(ABC):
 
         @self.transport.event_handler("on_client_disconnected")
         async def on_client_disconnected(transport, client):
-            if self.worker:
-                await self.worker.cancel()
+            await self._shutdown_workers()
 
     async def setup_daily_transport(self, url: str, token: str):
         """Set up the Daily transport (Linux/WSL only — daily-python has no Windows wheel)."""
@@ -260,8 +259,7 @@ class BaseBot(ABC):
 
         @self.transport.event_handler("on_participant_left")
         async def on_participant_left(transport, participant, reason):
-            if self.worker:
-                await self.worker.cancel()
+            await self._shutdown_workers()
 
         @self.transport.event_handler("on_first_participant_joined")
         async def on_first_participant_joined(transport, participant):
@@ -323,6 +321,19 @@ class BaseBot(ABC):
         )
         self.runner = WorkerRunner(handle_sigint=False)
 
+        # Optional Whisker debugger (WHISKER=1): a WebSocket server the Whisker web UI
+        # connects to for live frame/pipeline inspection. Transport-independent (an
+        # observer), so it works with FreeSWITCH calls. Attached AFTER the worker exists
+        # (the observer needs it); the server is registered with the runner in start().
+        self.whisker_server = None
+        if getattr(self.config, "enable_whisker", False):
+            from pipecat_whisker import WhiskerServer
+
+            port = self.config.whisker_port
+            self.whisker_server = WhiskerServer(host="localhost", port=port)
+            self.worker.add_observer(self.whisker_server.create_observer(self.worker))
+            logger.info(f"Whisker debugger ON — point the Whisker UI at ws://localhost:{port}")
+
     def trace_flow_nodes(self, flow_manager):
         """When call tracing is on, dump a compact context snapshot on every flow node
         change (a ``mark:set_node`` line in the trace).
@@ -371,11 +382,28 @@ class BaseBot(ABC):
             self.llm._compose_system_instruction()
 
     async def start(self):
-        """Start the bot's main worker."""
+        """Start the bot's main worker (plus the Whisker server, if enabled)."""
         if not self.runner or not self.worker:
             raise RuntimeError("Bot not properly initialized. Call create_pipeline first.")
-        await self.runner.add_workers(self.worker)
+        workers = [self.worker]
+        if getattr(self, "whisker_server", None):
+            workers.append(self.whisker_server)
+        await self.runner.add_workers(*workers)
         await self.runner.run()
+
+    async def _shutdown_workers(self):
+        """Cancel the pipeline worker AND the Whisker server (if any).
+
+        Both are root workers; with the runner's default auto_end, the call only ends
+        once EVERY root worker finishes — so the long-lived Whisker server must be
+        cancelled too, or start()'s runner.run() would never return.
+        """
+        for w in (self.worker, getattr(self, "whisker_server", None)):
+            if w:
+                try:
+                    await w.cancel()
+                except Exception as e:
+                    logger.debug(f"cancel {getattr(w, 'name', 'worker')} raised (already stopped?): {e}")
 
     async def cleanup(self):
         """Clean up resources.
@@ -383,11 +411,7 @@ class BaseBot(ABC):
         The worker owns the transport in 1.x; cancelling it stops the pipeline and
         closes the underlying connection. (There is no transport.close() to call.)
         """
-        if self.worker:
-            try:
-                await self.worker.cancel()
-            except Exception as e:
-                logger.debug(f"cleanup: worker.cancel() raised (already stopped?): {e}")
+        await self._shutdown_workers()
 
     @abstractmethod
     async def _handle_first_participant(self):

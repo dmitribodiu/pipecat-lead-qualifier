@@ -13,7 +13,7 @@ class DailyConfig(TypedDict):
     room_url: NotRequired[str]
 
 
-BotType = Literal["simple", "flow", "payment"]
+BotType = Literal["simple", "flow", "payment", "multiagent"]
 
 
 class BotConfig:
@@ -43,7 +43,7 @@ class BotConfig:
 
         # Bot configuration
         self._bot_type: BotType = os.getenv("BOT_TYPE", "flow")
-        if self._bot_type not in ("simple", "flow", "payment"):
+        if self._bot_type not in ("simple", "flow", "payment", "multiagent"):
             self._bot_type = "flow"  # Default to flow bot if invalid value
 
     def __repr__(self) -> str:
@@ -129,6 +129,18 @@ class BotConfig:
     def trace_audio(self) -> bool:
         """Include raw audio frames in the call trace (very high frequency). Default off."""
         return self._is_truthy(os.getenv("TRACE_AUDIO", "false"))
+
+    @property
+    def enable_whisker(self) -> bool:
+        """Attach the Whisker debugger: a WhiskerServer (WebSocket, default :9090) that the
+        Whisker web UI connects to for live frame inspection. Transport-independent, so it
+        works with FreeSWITCH calls. Off by default; set WHISKER=1 to enable."""
+        return self._is_truthy(os.getenv("WHISKER", "false"))
+
+    @property
+    def whisker_port(self) -> int:
+        """Port the Whisker WebSocket server binds (the UI connects here)."""
+        return int(os.getenv("WHISKER_PORT", "9090"))
 
     @property
     def bot_name(self) -> str:
