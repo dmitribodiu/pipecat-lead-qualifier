@@ -27,8 +27,11 @@ class BotConfig:
         }
         if os.getenv("TRANSPORT", "websocket").lower() == "daily":
             required["DAILY_API_KEY"] = os.getenv("DAILY_API_KEY")
-        if os.getenv("LLM_PROVIDER", "google").lower() == "openai":
+        provider = os.getenv("LLM_PROVIDER", "google").lower()
+        if provider == "openai":
             required["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
+        elif provider == "anthropic":
+            required["ANTHROPIC_API_KEY"] = os.getenv("ANTHROPIC_API_KEY")
         else:
             required["GOOGLE_API_KEY"] = os.getenv("GOOGLE_API_KEY")
 
@@ -72,6 +75,10 @@ class BotConfig:
     @property
     def openai_api_key(self) -> str:
         return os.getenv("OPENAI_API_KEY")
+
+    @property
+    def anthropic_api_key(self) -> str:
+        return os.getenv("ANTHROPIC_API_KEY")
 
     @property
     def deepgram_api_key(self) -> str:
@@ -183,7 +190,7 @@ class BotConfig:
     @llm_provider.setter
     def llm_provider(self, value: str):
         value = value.lower()
-        if value not in ("google", "openai"):
+        if value not in ("google", "openai", "anthropic"):
             raise ValueError(f"Invalid LLM provider: {value}")
 
         os.environ["LLM_PROVIDER"] = value
@@ -213,6 +220,16 @@ class BotConfig:
     @openai_model.setter
     def openai_model(self, value: str):
         os.environ["OPENAI_MODEL"] = value
+
+    @property
+    def anthropic_model(self) -> str:
+        # Haiku 4.5 is the low-latency / low-cost default for turn-by-turn voice;
+        # set ANTHROPIC_MODEL=claude-sonnet-5 for stronger routing/reasoning.
+        return os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5")
+
+    @anthropic_model.setter
+    def anthropic_model(self, value: str):
+        os.environ["ANTHROPIC_MODEL"] = value
 
     @property
     def openai_params(self) -> BaseOpenAILLMService.InputParams:

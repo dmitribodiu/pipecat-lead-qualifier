@@ -294,18 +294,25 @@ Otherwise:
 
 
 def create_goodbye_node() -> NodeConfig:
-    """Normal end of call."""
+    """Normal end of call.
+
+    The goodbye rides on the end_conversation action's ``text`` so its TTSSpeakFrame is
+    queued immediately before the EndFrame. Letting the LLM speak it (via task_messages)
+    races the EndFrame — which post_actions queues during node entry, before the LLM turn
+    even starts — so the goodbye gets cut off. respond_immediately=False keeps the LLM
+    from firing a needless turn.
+    """
     return {
         "name": "goodbye",
         "role_message": _ROLE,
-        "task_messages": [
+        "respond_immediately": False,
+        "functions": [],
+        "post_actions": [
             {
-                "role": "system",
-                "content": 'Say: "Thank you for using our payments line. Goodbye." Then stop.',
+                "type": "end_conversation",
+                "text": "Thank you for using our payments line. Goodbye.",
             }
         ],
-        "functions": [],
-        "post_actions": [{"type": "end_conversation"}],
     }
 
 
@@ -314,11 +321,9 @@ def create_terminate_node() -> NodeConfig:
     return {
         "name": "terminate",
         "role_message": _ROLE,
-        "task_messages": [
-            {"role": "system", "content": f'Say exactly: "{TERMINATE_TEXT}" Then stop.'}
-        ],
+        "respond_immediately": False,
         "functions": [],
-        "post_actions": [{"type": "end_conversation"}],
+        "post_actions": [{"type": "end_conversation", "text": TERMINATE_TEXT}],
     }
 
 
@@ -327,17 +332,17 @@ def create_api_failure_node() -> NodeConfig:
     return {
         "name": "api_failure",
         "role_message": _ROLE,
-        "task_messages": [
+        "respond_immediately": False,
+        "functions": [],
+        "post_actions": [
             {
-                "role": "system",
-                "content": (
-                    'Say: "I\'m sorry, there was a problem creating your payment order. '
-                    'No payment has been taken. Please try again later. Goodbye." Then stop.'
+                "type": "end_conversation",
+                "text": (
+                    "I'm sorry, there was a problem creating your payment order. "
+                    "No payment has been taken. Please try again later. Goodbye."
                 ),
             }
         ],
-        "functions": [],
-        "post_actions": [{"type": "end_conversation"}],
     }
 
 

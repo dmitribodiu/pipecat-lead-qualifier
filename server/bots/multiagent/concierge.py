@@ -197,11 +197,16 @@ def build_ask_billtype_node(action: str) -> NodeConfig:
 
 async def end_call(flow_manager: FlowManager) -> Tuple[dict, NodeConfig]:
     """Caller is finished — say goodbye and end."""
+    # Goodbye rides on the end_conversation action's `text` so its TTSSpeakFrame is queued
+    # right before the EndFrame. Letting the LLM speak it races the EndFrame (queued on node
+    # entry, before the LLM turn) and gets cut off. respond_immediately=False = no LLM turn.
     return {"status": "bye"}, {
         "name": "goodbye",
         "role_message": _ROLE,
-        "task_messages": [{"role": "system",
-            "content": 'Say: "Thank you for using our payments line. Goodbye." Then stop.'}],
+        "respond_immediately": False,
         "functions": [],
-        "post_actions": [{"type": "end_conversation"}],
+        "post_actions": [
+            {"type": "end_conversation",
+             "text": "Thank you for using our payments line. Goodbye."}
+        ],
     }

@@ -60,6 +60,7 @@ from pipecat.services.deepgram.tts import DeepgramTTSService
 from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 from pipecat.services.rime.tts import RimeHttpTTSService
+from pipecat.services.anthropic.llm import AnthropicLLMService
 from pipecat.services.google.llm import GoogleLLMService
 from pipecat.services.openai.llm import OpenAILLMService
 
@@ -147,6 +148,17 @@ class BaseBot(ABC):
                     api_key=config.openai_api_key,
                     model=config.openai_model,
                     params=config.openai_params,
+                )
+
+            case "anthropic":
+                if not config.anthropic_api_key:
+                    raise ValueError("Anthropic API key is required for Anthropic LLM")
+
+                # No temperature passed: the Claude 5-series (sonnet-5/opus-5) reject
+                # sampling params, so leaving it unset keeps every model id valid.
+                self.llm = AnthropicLLMService(
+                    api_key=config.anthropic_api_key,
+                    settings=AnthropicLLMService.Settings(model=config.anthropic_model),
                 )
 
             case _:
