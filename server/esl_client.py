@@ -11,6 +11,7 @@ connection per command is fine: hangups are infrequent (once per call).
 """
 
 import asyncio
+import re
 
 from loguru import logger
 
@@ -52,9 +53,26 @@ async def hangup(
             return False
         writer.write(f"api uuid_kill {uuid}\n\n".encode())
         await writer.drain()
-        result = await _read_block(reader, timeout)
-        logger.info(f"ESL uuid_kill {uuid} -> {result.strip()[:120]}")
-        return True
+        headers = await _read_block(reader, timeout)  # "Content-Type: api/response\nContent-Length: N"
+        # Read the response BODY (the actual "+OK" / "-ERR No such channel") so the log
+        # shows whether the channel was really killed, not just the headers.
+        body = ""
+        m = re.search(r"Content-Length:\s*(\d+)", headers)
+        if m and int(m.group(1)) > 0:
+            try:
+                body = (await asyncio.wait_for(
+                    reader.readexactly(int(m.group(1))), timeout)).decode(errors="replace")
+            except Exception:
+                pass
+        ok = body.startswith("+OK")
+        logger.info(f"ESL uuid_kill {uuid} -> {body.strip() or headers.strip()[:80]}")
+        if not ok:
+            logger.warning(
+                f"uuid_kill did NOT return +OK for {uuid} — FreeSWITCH reports no such "
+                "channel. The caller stays connected. Likely the fork URL's ?uuid= is not "
+                "the caller's live channel UUID; compare it with `show channels` in fs_cli."
+            )
+        return ok
     except Exception as e:
         logger.warning(f"ESL hangup {uuid} failed: {e}")
         return False

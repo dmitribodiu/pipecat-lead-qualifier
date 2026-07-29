@@ -349,6 +349,20 @@ class BaseBot(ABC):
             self.worker.add_observer(self.whisker_server.create_observer(self.worker))
             logger.info(f"Whisker debugger ON — point the Whisker UI at ws://localhost:{port}")
 
+            # Whisker is a second ROOT worker; with the runner's auto_end, run() returns
+            # only when EVERY root worker finishes. On a bot-initiated end (end_call ->
+            # EndFrame) the PipelineWorker finishes but the long-lived Whisker server does
+            # not — so run() would hang and the end-of-call ESL hangup (main.py finally)
+            # would never fire (the caller stays connected until Ctrl+C). Cancel Whisker
+            # when the pipeline reaches a terminal state so the runner can end the call.
+            @self.worker.event_handler("on_pipeline_finished")
+            async def _cancel_whisker_on_finish(_worker, _frame):
+                if self.whisker_server:
+                    try:
+                        await self.whisker_server.cancel()
+                    except Exception as e:
+                        logger.debug(f"Whisker cancel on pipeline finish raised: {e}")
+
     def trace_flow_nodes(self, flow_manager):
         """When call tracing is on, dump a compact context snapshot on every flow node
         change (a ``mark:set_node`` line in the trace).
