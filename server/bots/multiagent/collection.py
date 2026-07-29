@@ -22,9 +22,9 @@ from pipecat.flows import FlowManager, NodeConfig
 
 from bots.multiagent.intent import BILL_TYPES, PaymentIntent
 from bots.multiagent.services import lookup
-from bots.multiagent.settlement import build_confirm_node
+from bots.multiagent.settlement import build_confirm_node, _spaced
 from bots.multiagent.tenant import (
-    role_message, term, cfg, slot_rules, validate_slot, retry_message,
+    role_message, term, cfg, money, slot_rules, validate_slot, retry_message,
 )
 
 # Sentinel: rules enforcement decided the caller exhausted their attempts on a slot.
@@ -119,7 +119,8 @@ async def _bail(flow_manager: FlowManager, message: str) -> NodeConfig:
     """Abandon the current payment (attempts exhausted) and hand back to the Concierge."""
     from bots.multiagent.concierge import resume
 
-    for k in ("intent_slots", "bill_info", "bill_type", "intent", "slot_attempts"):
+    for k in ("intent_slots", "bill_info", "bill_type", "intent", "slot_attempts",
+              "balance_announced"):
         flow_manager.state.pop(k, None)
     return await resume(flow_manager, message)
 
@@ -172,6 +173,18 @@ When everything is collected you'll be moved to confirmation.
         # record_parking / record_water for cleaner per-agent tool schemas if you prefer.
         "functions": [record_slots, explain_current_field, cancel_payment],
     }
+    # After the invoice is retrieved, state the outstanding balance to the caller right
+    # before asking how much they'd like to pay (once — flag prevents repeating on re-ask).
+    info = state.get("bill_info")
+    if step.slot == "amount" and info is not None and not state.get("balance_announced"):
+        from bots.multiagent.concierge import _prepend_say
+
+        _prepend_say(
+            node,
+            f"{noun.capitalize()} {_spaced(str(info.reference))} has an outstanding "
+            f"balance of {money(info.amount_due, info.currency)}.",
+        )
+        state["balance_announced"] = True
     if reason:
         slot, why = reason
         rules = slot_rules(state, bill_type, slot)
@@ -261,6 +274,7 @@ async def cancel_payment(flow_manager: FlowManager) -> Tuple[dict, NodeConfig]:
     """Caller abandons the current payment — clear it and hand back to the Concierge."""
     from bots.multiagent.concierge import resume
 
-    for k in ("intent_slots", "bill_info", "bill_type", "intent", "slot_attempts"):
+    for k in ("intent_slots", "bill_info", "bill_type", "intent", "slot_attempts",
+              "balance_announced"):
         flow_manager.state.pop(k, None)
     return {"status": "cancelled"}, await resume(flow_manager, "Okay, I've stopped that payment.")

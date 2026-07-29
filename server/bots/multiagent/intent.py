@@ -92,17 +92,9 @@ PARKING = BillType(
     ref_word="ticket number",
     allow_partial=False,
     steps=[
-        CollectStep(
-            slot="reference",
-            ask="Is this a new or an older ticket?",
-            help="It tells me where your number is printed.",
-            branches={
-                "new": [CollectStep(slot="reference", ask="What's the 10-digit number, top-right of the ticket?",
-                                    help="New tickets: 10-digit code, top-right corner.", example="1234567890")],
-                "old": [CollectStep(slot="reference", ask="What's the 8-digit number, bottom-left of the ticket?",
-                                    help="Older tickets: 8-digit code, bottom-left.", example="12345678")],
-            },
-        ),
+        CollectStep(slot="reference", ask="What's your ticket number?",
+                    help="It's the reference number printed on your parking ticket.",
+                    example="1001"),
         CollectStep(slot="amount", ask="How much would you like to pay?",
                     help="The amount in pounds; parking fines are paid in full."),
     ],

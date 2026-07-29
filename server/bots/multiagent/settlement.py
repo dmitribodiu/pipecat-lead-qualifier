@@ -93,6 +93,8 @@ async def proceed_payment(
     state["bill_type"] = info.bill_type
     slots = state.setdefault("intent_slots", {})
     slots["reference"] = info.reference  # already resolved by the inquiry lookup
+    # The junction already read the balance out, so collection shouldn't announce it again.
+    state["balance_announced"] = True
     if amount:
         slots["amount"] = amount
 
@@ -208,5 +210,6 @@ def build_failure_node(state: dict) -> NodeConfig:
 
 
 def _clear_payment(state: dict) -> None:
-    for k in ("intent", "intent_slots", "bill_info", "arrival", "slot_attempts"):
+    for k in ("intent", "intent_slots", "bill_info", "arrival", "slot_attempts",
+              "balance_announced"):
         state.pop(k, None)

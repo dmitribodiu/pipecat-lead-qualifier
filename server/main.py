@@ -163,15 +163,30 @@ async def audio_websocket(websocket: WebSocket):
         # in silence. No-op if the caller already hung up. Done here (not in a transport
         # event) so it survives worker teardown.
         if call_uuid and config.enable_esl_hangup:
+            logger.info(
+                f"End of flow — hanging up channel {call_uuid} via ESL "
+                f"{config.fs_esl_host}:{config.fs_esl_port}"
+            )
             if config.hangup_delay_s > 0:
                 await asyncio.sleep(config.hangup_delay_s)  # let a final "goodbye" flush
             from esl_client import hangup
 
-            await hangup(
+            ok = await hangup(
                 call_uuid,
                 host=config.fs_esl_host,
                 port=config.fs_esl_port,
                 password=config.fs_esl_password,
+            )
+            if not ok:
+                logger.warning(
+                    "ESL hangup did not complete — the caller may stay connected. "
+                    "Check FS_ESL_HOST/PORT/PASSWORD and that FreeSWITCH event_socket "
+                    "accepts this connection (ACL)."
+                )
+        else:
+            logger.info(
+                f"No ESL hangup (uuid={call_uuid!r}, ESL_HANGUP={config.enable_esl_hangup}). "
+                "Caller stays connected until FreeSWITCH drops the channel."
             )
         logger.info("Bot session ended")
 

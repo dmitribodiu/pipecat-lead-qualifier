@@ -21,7 +21,7 @@ from bots.multiagent.faq import get_business_info
 from bots.multiagent.tenant import render, role_message, term, is_allowed, enabled_bill_types
 
 _WORKING_KEYS = ("intent", "intent_slots", "bill_info", "arrival", "bill_type", "current",
-                 "slot_attempts")
+                 "slot_attempts", "balance_announced")
 
 
 # ── entry + hub nodes ─────────────────────────────────────────────────────────
