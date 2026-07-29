@@ -193,7 +193,11 @@ class BaseBot(ABC):
             # Bots can append domain rules to the completeness judgment (e.g. "fewer
             # digits than an invoice number needs = the caller is still dictating") by
             # defining a TURN_COMPLETION_GUIDANCE class attribute.
-            vad_stop_secs = 0.2
+            # 0.3s of silence before a turn is considered stopped (up from 0.2). A slightly
+            # longer window tolerates short mid-utterance pauses (e.g. "pay ticket 1001 …
+            # 55 pounds") so they aggregate into one turn more often, at the cost of ~0.1s
+            # extra latency at every turn end. This is an interim tweak — see notes.
+            vad_stop_secs = 0.3
             guidance = getattr(self, "TURN_COMPLETION_GUIDANCE", "")
             self.turn_completion_config = (
                 UserTurnCompletionConfig(
@@ -204,7 +208,7 @@ class BaseBot(ABC):
             )
             user_turn_strategies = FilterIncompleteUserTurnStrategies(
                 config=self.turn_completion_config,
-                stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.2)],
+                stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.3)],
             )
         else:
             vad_stop_secs = 0.2
