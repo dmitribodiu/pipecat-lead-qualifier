@@ -223,15 +223,18 @@ def build_ask_billtype_node(state: dict, action: str) -> NodeConfig:
 
 async def end_call(flow_manager: FlowManager) -> Tuple[dict, NodeConfig]:
     """Caller is finished — say goodbye and end."""
-    # Goodbye rides on the end_conversation action's `text` so its TTSSpeakFrame is queued
-    # right before the EndFrame. Letting the LLM speak it races the EndFrame (queued on node
-    # entry, before the LLM turn) and gets cut off. respond_immediately=False = no LLM turn.
+    # end_conversation speaks its `text` (a TTSSpeakFrame) then queues the EndFrame. It MUST
+    # be a pre_action, not a post_action: with respond_immediately=False the flow manager
+    # DEFERS post_actions until the next LLM completion (flows/manager.py ~L716), which never
+    # comes for this terminal node — so a post_action goodbye never fires and the call hangs.
+    # pre_actions run immediately on node entry, so the goodbye is spoken and the call ends.
     return {"status": "bye"}, {
         "name": "goodbye",
         "role_message": role_message(flow_manager.state),
         "respond_immediately": False,
+        "task_messages": [],  # no LLM turn here, but the field is required
         "functions": [],
-        "post_actions": [
+        "pre_actions": [
             {"type": "end_conversation", "text": render(flow_manager.state, "goodbye")}
         ],
     }
