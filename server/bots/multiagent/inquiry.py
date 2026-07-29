@@ -13,10 +13,8 @@ from typing import Optional, Tuple
 
 from pipecat.flows import FlowManager, NodeConfig
 
-from bots.multiagent.intent import BILL_TYPES
-from bots.multiagent.faq import get_business_info
 from bots.multiagent.services import lookup
-from bots.multiagent.settlement import _ROLE
+from bots.multiagent.tenant import role_message, term, cfg
 
 
 async def resolve_and_junction(
@@ -31,33 +29,37 @@ async def resolve_and_junction(
     info = await lookup(bill_type, str(reference))
     if info is None:
         return build_not_found_node(flow_manager, bill_type, reference)
+    # Stamp the tenant's currency onto the resolved bill so every downstream read-back
+    # (junction, confirm, success) speaks the right currency.
+    info.currency = cfg(state).get("currency", info.currency)
     state["bill_info"] = info
     state["arrival"] = arrival
     from bots.multiagent.settlement import build_junction_node
 
-    return build_junction_node(info, arrival)
+    return build_junction_node(info, arrival, state)
 
 
 def build_ask_reference_node(flow_manager: FlowManager, bill_type: str) -> NodeConfig:
     """Ask for the reference when the caller wants a balance but didn't give one."""
     state = flow_manager.state
     state["bill_type"] = bill_type
-    bt = BILL_TYPES[bill_type]
+    noun = term(state, bill_type, "noun")
+    ref_word = term(state, bill_type, "ref_word")
     return {
         "name": f"inquire_{bill_type}",
-        "role_message": _ROLE,
-        "pre_actions": [{"type": "tts_say", "text": f"What's your {bt.ref_word}?"}],
+        "role_message": role_message(state),
+        "pre_actions": [{"type": "tts_say", "text": f"What's your {ref_word}?"}],
         "respond_immediately": False,
         "task_messages": [
             {
                 "role": "system",
                 "content": f"""<task>
-The caller wants the balance on a {bt.noun}. You asked for their {bt.ref_word}.
+The caller wants the balance on a {noun}. You asked for their {ref_word}.
 </task>
 <instructions>
-*   [ CONDITION: caller gives the {bt.ref_word} ] -> call `submit_reference` with it.
-*   [ CONDITION: caller asks where to find it ] -> answer briefly (it's the {bt.ref_word}
-    on their {bt.noun}), then re-ask.
+*   [ CONDITION: caller gives the {ref_word} ] -> call `submit_reference` with it.
+*   [ CONDITION: caller asks where to find it ] -> answer briefly (it's the {ref_word}
+    on their {noun}), then re-ask.
 </instructions>""",
             }
         ],
@@ -80,11 +82,10 @@ async def submit_reference(
 
 def build_not_found_node(flow_manager: FlowManager, bill_type: str, reference: str) -> NodeConfig:
     """Reference didn't resolve — offer to try again or go back."""
-    bt = BILL_TYPES.get(bill_type)
-    ref_word = bt.ref_word if bt else "reference"
+    ref_word = term(flow_manager.state, bill_type, "ref_word") if bill_type else "reference"
     return {
         "name": "not_found",
-        "role_message": _ROLE,
+        "role_message": role_message(flow_manager.state),
         "pre_actions": [
             {"type": "tts_say", "text": f"I couldn't find {ref_word} {reference}. "
              "Would you like to try again?"}

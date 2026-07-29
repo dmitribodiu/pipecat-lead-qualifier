@@ -1,0 +1,135 @@
+{
+  "$schema": "https://flows.pipecat.ai/schema/flow.json",
+  "meta": {
+    "name": "Payment order (3-node core, single-param)",
+    "version": "1.0",
+    "description": "Core collection loop: collect_invoice -> collect_amount -> confirm. Each node has ONE single-param function (submit_invoice / submit_amount / confirm_payment), so there are no shared function definitions. Terminal outcomes (retries_exhausted -> terminate, confirmed -> success, cancelled -> goodbye, payment_failed -> api_failure) are omitted here — add those nodes in the UI and point the outcomes at them. Handler bodies (lookup, limits, retry budgets) live in payment_editor.py and are opaque to the canvas."
+  },
+  "global_functions": [
+    {
+      "name": "get_business_info",
+      "description": "Answer a general question (hours, contact, what an invoice number is). Stays in the current node.",
+      "properties": {
+        "question": { "type": "string", "description": "The caller's question, paraphrased." }
+      },
+      "required": []
+    }
+  ],
+  "nodes": [
+    {
+      "id": "collect_invoice",
+      "type": "initial",
+      "position": { "x": 0, "y": 0 },
+      "data": {
+        "label": "Collect invoice",
+        "role_messages": [{ "role": "system", "content": "You are Marissa, an automated payments assistant. Be brief and warm. Convert spoken numbers to digits. Never invent a value the caller did not provide." }],
+        "task_messages": [{ "role": "system", "content": "Get the invoice number (3-10 digits) and call submit_invoice(invoice_number=...). Ask ONLY for the invoice number here; the amount is collected at the next step." }],
+        "pre_actions": [
+          { "type": "announce", "fallback": "Welcome to the payments line. May I have your invoice number please?" },
+          { "type": "set_completeness_rules", "rules": "invoice-number rules" }
+        ],
+        "respond_immediately": false,
+        "functions": [
+          {
+            "name": "submit_invoice",
+            "description": "Record the invoice number, look it up, and move to the amount step. Validation, lookup and retry budget are handled in payment_editor.py.",
+            "properties": {
+              "invoice_number": { "type": "string", "description": "Invoice reference as digits (e.g. 222)." }
+            },
+            "required": ["invoice_number"],
+            "decision": {
+              "action": "# result is computed by submit_invoice() in payment_editor.py: found | invalid_invoice | invoice_not_found | retries_exhausted",
+              "conditions": [
+                { "operator": "==", "value": "found", "next_node_id": "collect_amount" },
+                { "operator": "==", "value": "invalid_invoice", "next_node_id": "collect_invoice" },
+                { "operator": "==", "value": "invoice_not_found", "next_node_id": "collect_invoice" },
+                { "operator": "==", "value": "retries_exhausted", "next_node_id": "end_call" }
+              ],
+              "default_next_node_id": "collect_invoice"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "collect_amount",
+      "type": "node",
+      "position": { "x": 320, "y": 0 },
+      "data": {
+        "label": "Collect amount",
+        "role_messages": [{ "role": "system", "content": "You are Marissa, an automated payments assistant. Be brief and warm." }],
+        "task_messages": [{ "role": "system", "content": "The invoice is already recorded. Get the amount in pounds and call submit_amount(amount=...)." }],
+        "pre_actions": [
+          { "type": "announce", "fallback": "How much would you like to pay?" },
+          { "type": "set_completeness_rules", "rules": "amount rules" }
+        ],
+        "respond_immediately": false,
+        "functions": [
+          {
+            "name": "submit_amount",
+            "description": "Record the amount to pay and move to confirmation. Limits and retry budget are handled in payment_editor.py.",
+            "properties": {
+              "amount": { "type": "number", "description": "Amount to pay in pounds (e.g. 34.50)." }
+            },
+            "required": ["amount"],
+            "decision": {
+              "action": "# result is computed by submit_amount() in payment_editor.py: ready_to_confirm | amount_out_of_range | retries_exhausted",
+              "conditions": [
+                { "operator": "==", "value": "ready_to_confirm", "next_node_id": "confirm" },
+                { "operator": "==", "value": "amount_out_of_range", "next_node_id": "collect_amount" },
+                { "operator": "==", "value": "retries_exhausted", "next_node_id": "end_call" }
+              ],
+              "default_next_node_id": "collect_amount"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "confirm",
+      "type": "node",
+      "position": { "x": 640, "y": 0 },
+      "data": {
+        "label": "Confirm",
+        "role_messages": [{ "role": "system", "content": "You are Marissa. Respond only by calling a function. Never say the payment is done - the next node speaks the result." }],
+        "task_messages": [{ "role": "system", "content": "Handle the yes/no read-back reply. Yes -> confirm_payment(confirmed=true). Change the amount -> confirm_payment(confirmed=false). Cancel -> confirm_payment(confirmed=false, cancel=true)." }],
+        "pre_actions": [
+          { "type": "announce", "fallback": "Is that correct?" },
+          { "type": "set_completeness_rules", "rules": "confirm rules" }
+        ],
+        "respond_immediately": false,
+        "functions": [
+          {
+            "name": "confirm_payment",
+            "description": "Finalize or cancel the payment after the read-back.",
+            "properties": {
+              "confirmed": { "type": "boolean", "description": "True if confirmed as read back." },
+              "cancel": { "type": "boolean", "description": "True to abandon the payment." }
+            },
+            "required": ["confirmed"],
+            "decision": {
+              "action": "# result is computed by confirm_payment() in payment_editor.py: confirmed | cancelled | payment_failed | not_confirmed. Add success/goodbye/api_failure nodes in the UI and point confirmed/cancelled/payment_failed at them.",
+              "conditions": [
+                { "operator": "==", "value": "not_confirmed", "next_node_id": "collect_amount" }
+              ],
+              "default_next_node_id": "confirm"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "end_call",
+      "type": "end",
+      "position": { "x": 960, "y": 160 },
+      "data": {
+        "label": "End call",
+        "respond_immediately": false,
+        "post_actions": [
+          { "type": "end_conversation", "text": "I will terminate the call, bye." }
+        ]
+      }
+    }
+  ],
+  "edges": []
+}

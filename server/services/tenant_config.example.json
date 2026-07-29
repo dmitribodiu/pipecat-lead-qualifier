@@ -1,0 +1,42 @@
+{
+  "_comment": "Illustration of one tenant row as it would live in the Configuration store / portal. The MockConfigurationApi ships two of these inline (see config_api.py: _TENANTS). Prompts are Jinja templates rendered against the settings + runtime state, so they may use variables ({{ tenant_display }}) and conditionals ({% if %}).",
+  "tenant_id": "mdl_municipal",
+  "settings": {
+    "tenant_display": "Chisinau Municipal Services",
+    "assistant_name": "Ana",
+    "persona": "an automated payments assistant for the municipal services line",
+    "currency": "MDL",
+    "locale": "en-MD",
+    "services_blurb": "I can check a balance or take a payment for parking fines or utility bills.",
+    "business_faq": "Program: 8am to 4pm, Monday to Friday. Contact: 022 000 000 or help@chisinau.md. We take card payments for parking fines and utility bills over the phone.",
+    "bill_types": {
+      "parking": {
+        "noun": "parking fine",
+        "ref_word": "fine number",
+        "slots": {
+          "amount": { "min": 1, "max": 5000, "max_attempts": 2 },
+          "reference": { "max_attempts": 2 }
+        }
+      },
+      "water": {
+        "noun": "utility bill",
+        "ref_word": "account number",
+        "slots": {
+          "amount": { "min": 1, "max": 5000, "max_attempts": 3 },
+          "reference": { "max_attempts": 3 }
+        }
+      }
+    },
+    "capabilities": {
+      "parking": ["pay", "inquire"],
+      "water": ["pay"]
+    },
+    "amount_limit": 5000,
+    "max_attempts": 3,
+    "prompts": {
+      "greeting": "Welcome to {{ tenant_display }}. {{ services_blurb }} What would you like to do?",
+      "menu": "Is there anything else I can help you with?",
+      "goodbye": "Thank you for calling {{ tenant_display }}. Goodbye."
+    }
+  }
+}

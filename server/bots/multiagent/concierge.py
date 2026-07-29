@@ -18,21 +18,19 @@ from pipecat.flows import FlowManager, NodeConfig
 
 from bots.multiagent.intent import QueueItem, enqueue, next_item, BILL_TYPES
 from bots.multiagent.faq import get_business_info
-from bots.multiagent.settlement import _ROLE
+from bots.multiagent.tenant import render, role_message, term, is_allowed, enabled_bill_types
 
-_WORKING_KEYS = ("intent", "intent_slots", "bill_info", "arrival", "bill_type", "current")
+_WORKING_KEYS = ("intent", "intent_slots", "bill_info", "arrival", "bill_type", "current",
+                 "slot_attempts")
 
 
 # ── entry + hub nodes ─────────────────────────────────────────────────────────
-def build_greeting_node() -> NodeConfig:
-    """First node of the call — greet and capture intent."""
+def build_greeting_node(state: dict) -> NodeConfig:
+    """First node of the call — greet (from the tenant's greeting prompt) and capture intent."""
     return {
         "name": "greeting",
-        "role_message": _ROLE,
-        "pre_actions": [
-            {"type": "tts_say", "text": "Welcome to our payments line. I can look up a bill "
-             "or take a payment for parking tickets or water bills. What would you like to do?"}
-        ],
+        "role_message": role_message(state),
+        "pre_actions": [{"type": "tts_say", "text": render(state, "greeting")}],
         "respond_immediately": False,
         "task_messages": [_ROUTER_TASK],
         "functions": [route],
@@ -41,10 +39,11 @@ def build_greeting_node() -> NodeConfig:
 
 def build_menu_node(flow_manager: FlowManager, preface: str = "") -> NodeConfig:
     """The hub — reached when the queue is empty; asks what's next."""
-    line = (preface + " " if preface else "") + "Is there anything else I can help you with?"
+    state = flow_manager.state
+    line = (preface + " " if preface else "") + render(state, "menu")
     return {
         "name": "menu",
-        "role_message": _ROLE,
+        "role_message": role_message(state),
         "pre_actions": [{"type": "tts_say", "text": line}],
         "respond_immediately": False,
         "task_messages": [_ROUTER_TASK, {"role": "system",
@@ -157,10 +156,23 @@ def _prepend_say(node: NodeConfig, text: str) -> None:
 
 
 async def dispatch(flow_manager: FlowManager, item: QueueItem) -> NodeConfig:
-    """Route one queue item to the right agent, seeding known slots."""
+    """Route one queue item to the right agent, seeding known slots.
+
+    Enforces the tenant's ``capabilities`` here: an operation the tenant doesn't offer is
+    declined and the queue drains on to the next item — the single gate every request
+    passes through.
+    """
     state = flow_manager.state
     if not item.bill_type or item.bill_type not in BILL_TYPES:
-        return build_ask_billtype_node(item.action)
+        return build_ask_billtype_node(state, item.action)
+
+    # Capability gate: does this tenant offer this action on this bill type?
+    if not is_allowed(state, item.action, item.bill_type):
+        verb = "look up" if item.action == "inquire" else "take payment for"
+        return await resume(
+            flow_manager,
+            f"I'm sorry, I can't {verb} a {term(state, item.bill_type, 'noun')} on this line.",
+        )
 
     if item.action == "inquire":
         from bots.multiagent.inquiry import build_ask_reference_node, resolve_and_junction
@@ -181,14 +193,28 @@ async def dispatch(flow_manager: FlowManager, item: QueueItem) -> NodeConfig:
     return await advance_collection(flow_manager, item.bill_type)
 
 
-def build_ask_billtype_node(action: str) -> NodeConfig:
-    """Bill type wasn't clear — ask which one, then re-route."""
+def build_ask_billtype_node(state: dict, action: str) -> NodeConfig:
+    """Bill type wasn't clear — ask which one, offering ONLY the tenant's enabled types."""
     verb = "look up" if action == "inquire" else "pay"
+    nouns = [
+        term(state, bt, "noun")
+        for bt in enabled_bill_types(state)
+        if is_allowed(state, action, bt)
+    ]
+    if not nouns:
+        text = "I'm sorry, that isn't something I can help with on this line."
+    else:
+        if len(nouns) == 1:
+            listing = f"a {nouns[0]}"
+        elif len(nouns) == 2:
+            listing = f"a {nouns[0]} or a {nouns[1]}"
+        else:
+            listing = ", ".join(f"a {n}" for n in nouns[:-1]) + f", or a {nouns[-1]}"
+        text = f"Sure — which would you like to {verb}: {listing}?"
     return {
         "name": "ask_billtype",
-        "role_message": _ROLE,
-        "pre_actions": [{"type": "tts_say", "text": f"Sure — is that a parking ticket or a "
-                         f"water bill you'd like to {verb}?"}],
+        "role_message": role_message(state),
+        "pre_actions": [{"type": "tts_say", "text": text}],
         "respond_immediately": False,
         "task_messages": [_ROUTER_TASK],
         "functions": [route],
@@ -202,11 +228,10 @@ async def end_call(flow_manager: FlowManager) -> Tuple[dict, NodeConfig]:
     # entry, before the LLM turn) and gets cut off. respond_immediately=False = no LLM turn.
     return {"status": "bye"}, {
         "name": "goodbye",
-        "role_message": _ROLE,
+        "role_message": role_message(flow_manager.state),
         "respond_immediately": False,
         "functions": [],
         "post_actions": [
-            {"type": "end_conversation",
-             "text": "Thank you for using our payments line. Goodbye."}
+            {"type": "end_conversation", "text": render(flow_manager.state, "goodbye")}
         ],
     }

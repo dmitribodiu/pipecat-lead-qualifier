@@ -39,7 +39,7 @@ def cli() -> None:
         "-b",
         "--bot-type",
         type=str.lower,
-        choices=["simple", "flow", "payment"],
+        choices=["simple", "flow", "payment", "multiagent", "payment_editor"],
         help="Type of bot (overrides BOT_TYPE in configuration)",
     )
 

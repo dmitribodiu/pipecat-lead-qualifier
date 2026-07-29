@@ -21,9 +21,14 @@ from loguru import logger
 from pipecat.flows import FlowManager, NodeConfig
 
 from bots.multiagent.intent import BILL_TYPES, PaymentIntent
-from bots.multiagent.faq import get_business_info
 from bots.multiagent.services import lookup
-from bots.multiagent.settlement import build_confirm_node, _ROLE, _spaced
+from bots.multiagent.settlement import build_confirm_node
+from bots.multiagent.tenant import (
+    role_message, term, cfg, slot_rules, validate_slot, retry_message,
+)
+
+# Sentinel: rules enforcement decided the caller exhausted their attempts on a slot.
+_BAIL = object()
 
 
 def _remaining(state: dict, bill_type: str) -> list:
@@ -43,29 +48,90 @@ async def advance_collection(flow_manager: FlowManager, bill_type: str) -> NodeC
     state = flow_manager.state
     state["bill_type"] = bill_type
     slots = state.setdefault("intent_slots", {})
+    attempts = state.setdefault("slot_attempts", {})
     not_found = None
     if slots.get("reference") and "bill_info" not in state:
         info = await lookup(bill_type, str(slots["reference"]))
         if info is None:
             # e.g. a queued ticket that turns out not to exist — discovered here, mid-flow.
             not_found = slots.pop("reference", None)
-            logger.info(f"{bill_type} reference {not_found} not found; re-asking")
+            attempts["reference"] = attempts.get("reference", 0) + 1
+            rules = slot_rules(state, bill_type, "reference")
+            logger.info(f"{bill_type} reference {not_found} not found "
+                        f"(attempt {attempts['reference']}/{rules['max_attempts']})")
+            if attempts["reference"] >= rules["max_attempts"]:
+                return await _bail(
+                    flow_manager,
+                    f"I couldn't verify that {term(state, bill_type, 'ref_word')} after "
+                    f"{rules['max_attempts']} attempts. No payment was taken.",
+                )
         else:
+            # Stamp the tenant's currency so settlement read-backs speak it correctly.
+            info.currency = cfg(state).get("currency", info.currency)
             state["bill_info"] = info
-    if _remaining(state, bill_type):
-        node = build_collection_entry(flow_manager, bill_type)
+
+    # Enforce per-slot value rules (amount min/max, …) on what's collected so far.
+    bad = _enforce_rules(state, bill_type)
+    if bad is _BAIL:
+        return await _bail(flow_manager, state.pop("_bail_reason", "No payment was taken."))
+
+    if bad or _remaining(state, bill_type):
+        node = build_collection_entry(flow_manager, bill_type, reason=bad or None)
         if not_found:
             from bots.multiagent.concierge import _prepend_say
 
-            _prepend_say(node, f"I couldn't find {BILL_TYPES[bill_type].noun} {not_found}.")
+            _prepend_say(node, f"I couldn't find {term(state, bill_type, 'noun')} {not_found}.")
         return node
     return _to_settlement(flow_manager)
 
 
-def build_collection_entry(flow_manager: FlowManager, bill_type: str) -> NodeConfig:
+def _enforce_rules(state: dict, bill_type: str):
+    """Validate already-collected value-slots against config rules.
+
+    Runs on every advance so ALL entry paths (record_slots, junction/dispatch seeding)
+    are checked in one place. On failure: drop the bad value, count the attempt, and
+    return ``(slot, reason)`` to re-ask — or ``_BAIL`` once attempts are exhausted.
+    """
+    slots = state.get("intent_slots", {})
+    attempts = state.setdefault("slot_attempts", {})
+    for slot in ("amount",):  # value-validated slots; extend as needed
+        if slot not in slots:
+            continue
+        rules = slot_rules(state, bill_type, slot)
+        ok, reason = validate_slot(slot, slots[slot], rules)
+        if ok:
+            continue
+        slots.pop(slot, None)
+        attempts[slot] = attempts.get(slot, 0) + 1
+        logger.info(f"{bill_type}.{slot} invalid ({reason}); "
+                    f"attempt {attempts[slot]}/{rules['max_attempts']}")
+        if attempts[slot] >= rules["max_attempts"]:
+            state["_bail_reason"] = (
+                f"I couldn't accept a valid amount after {rules['max_attempts']} "
+                "attempts. No payment was taken."
+            )
+            return _BAIL
+        return (slot, reason)
+    return None
+
+
+async def _bail(flow_manager: FlowManager, message: str) -> NodeConfig:
+    """Abandon the current payment (attempts exhausted) and hand back to the Concierge."""
+    from bots.multiagent.concierge import resume
+
+    for k in ("intent_slots", "bill_info", "bill_type", "intent", "slot_attempts"):
+        flow_manager.state.pop(k, None)
+    return await resume(flow_manager, message)
+
+
+def build_collection_entry(flow_manager: FlowManager, bill_type: str, reason=None) -> NodeConfig:
     """Build the node that asks for the next missing slot (sync — no lookup/settle here).
 
     Prefer advance_collection() as the entry; this just renders the "ask next" node.
+
+    Args:
+        reason: optional ``(slot, why)`` from a failed validation — prepends a corrective
+            line (and a "last try" warning) before re-asking.
     """
     state = flow_manager.state
     state["bill_type"] = bill_type
@@ -75,17 +141,18 @@ def build_collection_entry(flow_manager: FlowManager, bill_type: str) -> NodeCon
         return _to_settlement(flow_manager)
 
     step = remaining[0]
+    noun = term(state, bill_type, "noun")
     fields_help = "\n".join(f"- {s.slot}: {s.help}" for s in bt.steps)
-    return {
+    node = {
         "name": f"collect_{bill_type}",
-        "role_message": _ROLE,
+        "role_message": role_message(state),
         "pre_actions": [{"type": "tts_say", "text": step.ask}],
         "respond_immediately": False,
         "task_messages": [
             {
                 "role": "system",
                 "content": f"""<task>
-You are collecting details to pay a {bt.noun}. You just asked: "{step.ask}".
+You are collecting details to pay a {noun}. You just asked: "{step.ask}".
 Respond by calling a function, not with plain text. Call `record_slots` with whatever
 value(s) the caller provides, and NEVER ask them to repeat a value they already gave.
 When everything is collected you'll be moved to confirmation.
@@ -105,6 +172,17 @@ When everything is collected you'll be moved to confirmation.
         # record_parking / record_water for cleaner per-agent tool schemas if you prefer.
         "functions": [record_slots, explain_current_field, cancel_payment],
     }
+    if reason:
+        slot, why = reason
+        rules = slot_rules(state, bill_type, slot)
+        msg = retry_message(state, slot, why, rules)
+        left = rules["max_attempts"] - state.get("slot_attempts", {}).get(slot, 0)
+        if left == 1:
+            msg += " This is your last attempt."
+        from bots.multiagent.concierge import _prepend_say
+
+        _prepend_say(node, msg)
+    return node
 
 
 async def record_slots(
@@ -145,11 +223,11 @@ def _to_settlement(flow_manager: FlowManager) -> NodeConfig:
         reference=str(slots.get("reference")),
         amount=float(slots.get("amount")),
         payee=info.payee if info else "",
-        currency=info.currency if info else "GBP",
+        currency=info.currency if info else cfg(state).get("currency", "GBP"),
         extra={k: slots[k] for k in ("meter_reading", "tariff", "account_holder") if k in slots},
     )
     state["intent"] = intent
-    return build_confirm_node(intent)
+    return build_confirm_node(intent, state)
 
 
 async def explain_current_field(
@@ -183,6 +261,6 @@ async def cancel_payment(flow_manager: FlowManager) -> Tuple[dict, NodeConfig]:
     """Caller abandons the current payment — clear it and hand back to the Concierge."""
     from bots.multiagent.concierge import resume
 
-    for k in ("intent_slots", "bill_info", "bill_type", "intent"):
+    for k in ("intent_slots", "bill_info", "bill_type", "intent", "slot_attempts"):
         flow_manager.state.pop(k, None)
     return {"status": "cancelled"}, await resume(flow_manager, "Okay, I've stopped that payment.")

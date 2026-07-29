@@ -12,7 +12,8 @@ from loguru import logger
 
 from pipecat.flows import FlowManager
 
-# TODO(you): move to config / a knowledge source.
+# Fallback used only when a tenant config hasn't set `business_faq`. The live facts come
+# from the tenant config seeded into flow_manager.state (see services/config_api.py).
 BUSINESS_FAQ = (
     "Opening hours: 9am to 5pm, Monday to Friday. "
     "Contact: 0800 123 4567 or help@example.com. "
@@ -31,10 +32,11 @@ async def get_business_info(flow_manager: FlowManager, question: str = "") -> Tu
         question: The caller's question, paraphrased briefly.
     """
     logger.info(f"FAQ: {question!r}")
+    facts = flow_manager.state.get("tenant", {}).get("business_faq", BUSINESS_FAQ)
     return (
         {
             "status": "success",
-            "facts": BUSINESS_FAQ,
+            "facts": facts,
             "hint": "Answer briefly using ONLY these facts, then resume the task you were "
             "on and re-ask the pending question. If the facts don't cover it, say you "
             "don't have that information.",

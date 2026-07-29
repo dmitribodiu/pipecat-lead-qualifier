@@ -122,7 +122,10 @@ async def audio_websocket(websocket: WebSocket):
     # The dialplan fork URL carries ?uuid=${uuid}, so we know which FreeSWITCH channel
     # this media socket belongs to — needed to hang the call up over ESL at end-of-flow.
     call_uuid = websocket.query_params.get("uuid")
-    logger.info(f"FreeSWITCH mod_audio_fork connected on /audio (uuid={call_uuid})")
+    # The dialplan fork URL can also carry ?did=${destination_number}, which selects the
+    # tenant for this call (see services/config_api.py). Absent => fallback tenant.
+    call_did = websocket.query_params.get("did")
+    logger.info(f"FreeSWITCH mod_audio_fork connected on /audio (uuid={call_uuid}, did={call_did})")
 
     config = BotConfig()
     if config.bot_type == "payment":
@@ -133,6 +136,11 @@ async def audio_websocket(websocket: WebSocket):
         from bots.multiagent.bot import MultiAgentPaymentBot
 
         bot = MultiAgentPaymentBot(config)
+        bot.call_did = call_did
+    elif config.bot_type == "payment_editor":
+        from bots.payment_editor.payment_editor import PaymentEditorBot
+
+        bot = PaymentEditorBot(config)
     elif config.bot_type == "flow":
         from bots.flow import FlowBot
 
@@ -193,7 +201,7 @@ def parse_server_args():
         "-b",
         "--bot-type",
         type=str.lower,
-        choices=["simple", "flow", "payment", "multiagent"],
+        choices=["simple", "flow", "payment", "multiagent", "payment_editor"],
         help="Bot variant",
     )
 

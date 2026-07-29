@@ -13,7 +13,7 @@ class DailyConfig(TypedDict):
     room_url: NotRequired[str]
 
 
-BotType = Literal["simple", "flow", "payment", "multiagent"]
+BotType = Literal["simple", "flow", "payment", "multiagent", "payment_editor"]
 
 
 class BotConfig:
@@ -46,7 +46,7 @@ class BotConfig:
 
         # Bot configuration
         self._bot_type: BotType = os.getenv("BOT_TYPE", "flow")
-        if self._bot_type not in ("simple", "flow", "payment", "multiagent"):
+        if self._bot_type not in ("simple", "flow", "payment", "multiagent", "payment_editor"):
             self._bot_type = "flow"  # Default to flow bot if invalid value
 
     def __repr__(self) -> str:

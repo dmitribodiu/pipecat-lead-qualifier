@@ -17,6 +17,7 @@ from pipecat.flows import FlowManager, NodeConfig
 from bots.multiagent.intent import BillInfo, PaymentIntent
 from bots.multiagent.faq import get_business_info
 from bots.multiagent.services import execute_payment
+from bots.multiagent.tenant import role_message, money, term
 
 _ROLE = {
     "role": "system",
@@ -32,16 +33,17 @@ def _spaced(s: str) -> str:
 
 
 # ── post-lookup junction ──────────────────────────────────────────────────────
-def build_junction_node(info: BillInfo, arrival: str) -> NodeConfig:
+def build_junction_node(info: BillInfo, arrival: str, state: dict) -> NodeConfig:
     """The convergence point after any successful lookup.
 
     Args:
         info: the resolved bill.
         arrival: "inquire" (offer to pay) or "pay" (proceed toward payment).
+        state: flow state, for tenant currency wording.
     """
     balance = (
         f"{info.payee}: {_spaced(info.reference)} has an outstanding balance of "
-        f"{info.amount_due:.2f} pounds."
+        f"{money(info.amount_due, info.currency)}."
     )
     opener = (
         "Would you like to pay it now?" if arrival == "inquire"
@@ -49,7 +51,7 @@ def build_junction_node(info: BillInfo, arrival: str) -> NodeConfig:
     )
     return {
         "name": "junction",
-        "role_message": _ROLE,
+        "role_message": role_message(state),
         "pre_actions": [{"type": "tts_say", "text": f"{balance} {opener}"}],
         "respond_immediately": False,
         "task_messages": [
@@ -107,15 +109,15 @@ async def back_to_menu(flow_manager: FlowManager) -> Tuple[dict, NodeConfig]:
 
 
 # ── confirm -> execute -> success (the money-move) ────────────────────────────
-def build_confirm_node(intent: PaymentIntent) -> NodeConfig:
+def build_confirm_node(intent: PaymentIntent, state: dict) -> NodeConfig:
     """Read-back confirmation. Prompt forbids narrating the result (see payment.py fix)."""
     readback = (
-        f"So you wish to pay {intent.amount:.2f} pounds for {intent.bill_type} "
-        f"{_spaced(intent.reference)}. Is that correct?"
+        f"So you wish to pay {money(intent.amount, intent.currency)} for "
+        f"{term(state, intent.bill_type, 'noun')} {_spaced(intent.reference)}. Is that correct?"
     )
     return {
         "name": "confirm",
-        "role_message": _ROLE,
+        "role_message": role_message(state),
         "pre_actions": [{"type": "tts_say", "text": readback}],
         "respond_immediately": False,
         "task_messages": [
@@ -163,13 +165,14 @@ async def confirm_payment(
     result = await execute_payment(intent.bill_type, intent.reference, intent.amount)
     if not result.ok:
         logger.error(f"payment failed: {result.error}")
-        return {"status": "error", "error": result.error}, build_failure_node()
+        return {"status": "error", "error": result.error}, build_failure_node(state)
 
     # Announce success and flow straight into the menu (or the next queued payment) so the
     # bot proactively asks "anything else?" instead of going silent.
     line = (
-        f"Your payment of {intent.amount:.2f} pounds for {intent.bill_type} "
-        f"{_spaced(intent.reference)} is done. Your reference is {_spaced(result.order_id)}."
+        f"Your payment of {money(intent.amount, intent.currency)} for "
+        f"{term(state, intent.bill_type, 'noun')} {_spaced(intent.reference)} is done. "
+        f"Your reference is {_spaced(result.order_id)}."
     )
     _clear_payment(state)
     from bots.multiagent.concierge import resume
@@ -184,11 +187,11 @@ async def after_payment(flow_manager: FlowManager) -> Tuple[dict, NodeConfig]:
     return {"status": "ok"}, await resume(flow_manager)
 
 
-def build_failure_node() -> NodeConfig:
+def build_failure_node(state: dict) -> NodeConfig:
     """Payment API failed — never retry a money-move blindly; apologize and hand back."""
     return {
         "name": "settlement_failure",
-        "role_message": _ROLE,
+        "role_message": role_message(state),
         "pre_actions": [
             {
                 "type": "tts_say",
@@ -205,5 +208,5 @@ def build_failure_node() -> NodeConfig:
 
 
 def _clear_payment(state: dict) -> None:
-    for k in ("intent", "intent_slots", "bill_info", "arrival"):
+    for k in ("intent", "intent_slots", "bill_info", "arrival", "slot_attempts"):
         state.pop(k, None)

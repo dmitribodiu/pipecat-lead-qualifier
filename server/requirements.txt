@@ -19,3 +19,4 @@ fastapi
 uvicorn
 loguru
 aiohttp
+jinja2  # tenant prompt templates (bots/multiagent/tenant.py)
